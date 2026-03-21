@@ -1,0 +1,133 @@
+Collecting causal-conv1d
+  Using cached causal_conv1d-1.6.1.tar.gz (29 kB)
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting mamba-ssm==1.2.0.post1
+  Using cached mamba_ssm-1.2.0.post1.tar.gz (34 kB)
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: torch in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from mamba-ssm==1.2.0.post1) (2.2.1)
+Requirement already satisfied: packaging in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from mamba-ssm==1.2.0.post1) (25.0)
+Collecting ninja (from mamba-ssm==1.2.0.post1)
+  Downloading ninja-1.13.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (5.1 kB)
+Collecting einops (from mamba-ssm==1.2.0.post1)
+  Downloading einops-0.8.2-py3-none-any.whl.metadata (13 kB)
+Requirement already satisfied: triton in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from mamba-ssm==1.2.0.post1) (2.2.0)
+Collecting transformers (from mamba-ssm==1.2.0.post1)
+  Downloading transformers-5.3.0-py3-none-any.whl.metadata (32 kB)
+Requirement already satisfied: filelock in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (3.25.2)
+Requirement already satisfied: typing-extensions>=4.8.0 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (4.15.0)
+Requirement already satisfied: sympy in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (1.14.0)
+Requirement already satisfied: networkx in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (3.4.2)
+Requirement already satisfied: jinja2 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (3.1.6)
+Requirement already satisfied: fsspec in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (2026.2.0)
+Requirement already satisfied: nvidia-cuda-nvrtc-cu12==12.1.105 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (12.1.105)
+Requirement already satisfied: nvidia-cuda-runtime-cu12==12.1.105 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (12.1.105)
+Requirement already satisfied: nvidia-cuda-cupti-cu12==12.1.105 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (12.1.105)
+Requirement already satisfied: nvidia-cudnn-cu12==8.9.2.26 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (8.9.2.26)
+Requirement already satisfied: nvidia-cublas-cu12==12.1.3.1 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (12.1.3.1)
+Requirement already satisfied: nvidia-cufft-cu12==11.0.2.54 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (11.0.2.54)
+Requirement already satisfied: nvidia-curand-cu12==10.3.2.106 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (10.3.2.106)
+Requirement already satisfied: nvidia-cusolver-cu12==11.4.5.107 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (11.4.5.107)
+Requirement already satisfied: nvidia-cusparse-cu12==12.1.0.106 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (12.1.0.106)
+Requirement already satisfied: nvidia-nccl-cu12==2.19.3 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (2.19.3)
+Requirement already satisfied: nvidia-nvtx-cu12==12.1.105 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from torch->mamba-ssm==1.2.0.post1) (12.1.105)
+Requirement already satisfied: nvidia-nvjitlink-cu12 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from nvidia-cusolver-cu12==11.4.5.107->torch->mamba-ssm==1.2.0.post1) (12.9.86)
+Requirement already satisfied: MarkupSafe>=2.0 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from jinja2->torch->mamba-ssm==1.2.0.post1) (3.0.3)
+Requirement already satisfied: mpmath<1.4,>=1.1.0 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from sympy->torch->mamba-ssm==1.2.0.post1) (1.3.0)
+Collecting huggingface-hub<2.0,>=1.3.0 (from transformers->mamba-ssm==1.2.0.post1)
+  Downloading huggingface_hub-1.7.1-py3-none-any.whl.metadata (13 kB)
+Requirement already satisfied: numpy>=1.17 in /home/choemj/miniconda3/envs/Drama/lib/python3.10/site-packages (from transformers->mamba-ssm==1.2.0.post1) (2.2.6)
+Collecting pyyaml>=5.1 (from transformers->mamba-ssm==1.2.0.post1)
+  Downloading pyyaml-6.0.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+Collecting regex!=2019.12.17 (from transformers->mamba-ssm==1.2.0.post1)
+  Downloading regex-2026.2.28-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (40 kB)
+Collecting tokenizers<=0.23.0,>=0.22.0 (from transformers->mamba-ssm==1.2.0.post1)
+  Downloading tokenizers-0.22.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (7.3 kB)
+Collecting typer (from transformers->mamba-ssm==1.2.0.post1)
+  Downloading typer-0.24.1-py3-none-any.whl.metadata (16 kB)
+Collecting safetensors>=0.4.3 (from transformers->mamba-ssm==1.2.0.post1)
+  Downloading safetensors-0.7.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.1 kB)
+Collecting tqdm>=4.27 (from transformers->mamba-ssm==1.2.0.post1)
+  Downloading tqdm-4.67.3-py3-none-any.whl.metadata (57 kB)
+Collecting hf-xet<2.0.0,>=1.4.2 (from huggingface-hub<2.0,>=1.3.0->transformers->mamba-ssm==1.2.0.post1)
+  Downloading hf_xet-1.4.2-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (4.9 kB)
+Collecting httpx<1,>=0.23.0 (from huggingface-hub<2.0,>=1.3.0->transformers->mamba-ssm==1.2.0.post1)
+  Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+Collecting anyio (from httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.3.0->transformers->mamba-ssm==1.2.0.post1)
+  Downloading anyio-4.12.1-py3-none-any.whl.metadata (4.3 kB)
+Collecting certifi (from httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.3.0->transformers->mamba-ssm==1.2.0.post1)
+  Downloading certifi-2026.2.25-py3-none-any.whl.metadata (2.5 kB)
+Collecting httpcore==1.* (from httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.3.0->transformers->mamba-ssm==1.2.0.post1)
+  Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+Collecting idna (from httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.3.0->transformers->mamba-ssm==1.2.0.post1)
+  Downloading idna-3.11-py3-none-any.whl.metadata (8.4 kB)
+Collecting h11>=0.16 (from httpcore==1.*->httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.3.0->transformers->mamba-ssm==1.2.0.post1)
+  Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+Collecting exceptiongroup>=1.0.2 (from anyio->httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.3.0->transformers->mamba-ssm==1.2.0.post1)
+  Downloading exceptiongroup-1.3.1-py3-none-any.whl.metadata (6.7 kB)
+Collecting click>=8.2.1 (from typer->transformers->mamba-ssm==1.2.0.post1)
+  Downloading click-8.3.1-py3-none-any.whl.metadata (2.6 kB)
+Collecting shellingham>=1.3.0 (from typer->transformers->mamba-ssm==1.2.0.post1)
+  Downloading shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)
+Collecting rich>=12.3.0 (from typer->transformers->mamba-ssm==1.2.0.post1)
+  Downloading rich-14.3.3-py3-none-any.whl.metadata (18 kB)
+Collecting annotated-doc>=0.0.2 (from typer->transformers->mamba-ssm==1.2.0.post1)
+  Downloading annotated_doc-0.0.4-py3-none-any.whl.metadata (6.6 kB)
+Collecting markdown-it-py>=2.2.0 (from rich>=12.3.0->typer->transformers->mamba-ssm==1.2.0.post1)
+  Downloading markdown_it_py-4.0.0-py3-none-any.whl.metadata (7.3 kB)
+Collecting pygments<3.0.0,>=2.13.0 (from rich>=12.3.0->typer->transformers->mamba-ssm==1.2.0.post1)
+  Downloading pygments-2.19.2-py3-none-any.whl.metadata (2.5 kB)
+Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=12.3.0->typer->transformers->mamba-ssm==1.2.0.post1)
+  Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+Downloading einops-0.8.2-py3-none-any.whl (65 kB)
+Downloading ninja-1.13.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (180 kB)
+Downloading transformers-5.3.0-py3-none-any.whl (10.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10.7/10.7 MB 35.6 MB/s  0:00:00
+Downloading huggingface_hub-1.7.1-py3-none-any.whl (616 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 616.3/616.3 kB 18.5 MB/s  0:00:00
+Downloading hf_xet-1.4.2-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.2/4.2 MB 14.0 MB/s  0:00:00
+Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+Downloading tokenizers-0.22.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (3.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.3/3.3 MB 9.8 MB/s  0:00:00
+Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+Downloading pyyaml-6.0.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (770 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 770.3/770.3 kB 10.5 MB/s  0:00:00
+Downloading regex-2026.2.28-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (791 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 791.7/791.7 kB 11.2 MB/s  0:00:00
+Downloading safetensors-0.7.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (507 kB)
+Downloading tqdm-4.67.3-py3-none-any.whl (78 kB)
+Downloading anyio-4.12.1-py3-none-any.whl (113 kB)
+Downloading exceptiongroup-1.3.1-py3-none-any.whl (16 kB)
+Downloading idna-3.11-py3-none-any.whl (71 kB)
+Downloading certifi-2026.2.25-py3-none-any.whl (153 kB)
+Downloading typer-0.24.1-py3-none-any.whl (56 kB)
+Downloading annotated_doc-0.0.4-py3-none-any.whl (5.3 kB)
+Downloading click-8.3.1-py3-none-any.whl (108 kB)
+Downloading rich-14.3.3-py3-none-any.whl (310 kB)
+Downloading pygments-2.19.2-py3-none-any.whl (1.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 8.2 MB/s  0:00:00
+Downloading markdown_it_py-4.0.0-py3-none-any.whl (87 kB)
+Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+Downloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+Building wheels for collected packages: mamba-ssm, causal-conv1d
+  Building wheel for mamba-ssm (pyproject.toml): started
+  Building wheel for mamba-ssm (pyproject.toml): finished with status 'done'
+  Created wheel for mamba-ssm: filename=mamba_ssm-1.2.0.post1-cp310-cp310-linux_x86_64.whl size=137750683 sha256=b264292652a34fb9dd0ce880a34a4407ba7256a3338388d056769ec29a4581c9
+  Stored in directory: /home/choemj/.cache/pip/wheels/22/6e/60/ddd5c574b5793a30028f2cabdacd2a3ec2276edaaa8c00fd35
+  Building wheel for causal-conv1d (pyproject.toml): started
+  Building wheel for causal-conv1d (pyproject.toml): still running...
+  Building wheel for causal-conv1d (pyproject.toml): still running...
+  Building wheel for causal-conv1d (pyproject.toml): still running...
+  Building wheel for causal-conv1d (pyproject.toml): still running...
+  Building wheel for causal-conv1d (pyproject.toml): still running...
+  Building wheel for causal-conv1d (pyproject.toml): still running...
+  Building wheel for causal-conv1d (pyproject.toml): finished with status 'done'
+  Created wheel for causal-conv1d: filename=causal_conv1d-1.6.1-cp310-cp310-linux_x86_64.whl size=284511794 sha256=e6a18fc2a47b4c544a6ee6350df9a18942e790f35b6ca9ac712466d0315a8ee7
+  Stored in directory: /home/choemj/.cache/pip/wheels/76/9a/32/a403de078a92e8b90ccd957469f386ae080db7f0cb11dff517
+Successfully built mamba-ssm causal-conv1d
+Installing collected packages: tqdm, shellingham, safetensors, regex, pyyaml, pygments, ninja, mdurl, idna, hf-xet, h11, exceptiongroup, einops, click, certifi, annotated-doc, markdown-it-py, httpcore, anyio, rich, httpx, typer, causal-conv1d, huggingface-hub, tokenizers, transformers, mamba-ssm
+
+Successfully installed annotated-doc-0.0.4 anyio-4.12.1 causal-conv1d-1.6.1 certifi-2026.2.25 click-8.3.1 einops-0.8.2 exceptiongroup-1.3.1 h11-0.16.0 hf-xet-1.4.2 httpcore-1.0.9 httpx-0.28.1 huggingface-hub-1.7.1 idna-3.11 mamba-ssm-1.2.0.post1 markdown-it-py-4.0.0 mdurl-0.1.2 ninja-1.13.0 pygments-2.19.2 pyyaml-6.0.3 regex-2026.2.28 rich-14.3.3 safetensors-0.7.0 shellingham-1.5.4 tokenizers-0.22.2 tqdm-4.67.3 transformers-5.3.0 typer-0.24.1
