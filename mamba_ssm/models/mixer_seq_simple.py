@@ -10,15 +10,12 @@ from collections import namedtuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torchtune.modules import RMSNorm as _RMSNorm
-from einops import repeat
 
 from mamba_ssm.models.config_mamba import MambaConfig
 from mamba_ssm.modules.mamba_simple import Mamba
 from mamba_ssm.modules.mamba2 import Mamba2
 from mamba_ssm.modules.mha import MHA
-from mamba_ssm.modules.mlp import MLP
+from mamba_ssm.modules.mlp import GatedMLP
 from mamba_ssm.modules.block import Block
 from mamba_ssm.utils.generation import GenerationMixin
 from mamba_ssm.utils.hf import load_config_hf, load_state_dict_hf
@@ -35,8 +32,6 @@ def create_block(
     ssm_cfg=None,
     attn_layer_idx=None,
     attn_cfg=None,
-    pff_cfg=None,
-    dropout_p=0.0,
     norm_epsilon=1e-5,
     rms_norm=False,
     residual_in_fp32=False,
@@ -51,8 +46,6 @@ def create_block(
         attn_layer_idx = []
     if attn_cfg is None:
         attn_cfg = {}
-    if pff_cfg is None:
-        pff_cfg = {}        
     factory_kwargs = {"device": device, "dtype": dtype}
     if layer_idx not in attn_layer_idx:
         # Create a copy of the config to modify
@@ -75,7 +68,7 @@ def create_block(
         mlp_cls = nn.Identity
     else:
         mlp_cls = partial(
-            MLP, hidden_features=d_intermediate, out_features=d_model, **pff_cfg, **factory_kwargs
+            GatedMLP, hidden_features=d_intermediate, out_features=d_model, **factory_kwargs
         )
     block = Block(
         d_model,
@@ -84,7 +77,6 @@ def create_block(
         norm_cls=norm_cls,
         fused_add_norm=fused_add_norm,
         residual_in_fp32=residual_in_fp32,
-        dropout_p=dropout_p
     )
     block.layer_idx = layer_idx
     return block
@@ -122,36 +114,6 @@ def _init_weights(
                 with torch.no_grad():
                     p /= math.sqrt(n_residuals_per_layer * n_layer)
 
-class PositionalEncoding1D(nn.Module):
-    def __init__(
-        self,
-        max_length: int,
-        embed_dim: int,
-        device=None,
-        dtype=None
-    ):
-        factory_kwargs = {"device": device, "dtype": dtype}
-        super().__init__()
-        self.max_length = max_length
-        self.embed_dim = embed_dim
-
-        self.pos_emb = nn.Embedding(self.max_length, embed_dim, **factory_kwargs)
-
-    def forward(self, feat):
-        pos_emb = self.pos_emb(torch.arange(self.max_length, device=feat.device))
-        pos_emb = repeat(pos_emb, "L D -> B L D", B=feat.shape[0])
-
-        feat = feat + pos_emb[:, :feat.shape[1], :]
-        return feat
-
-    def forward_with_position(self, feat, position):
-        assert feat.shape[1] == 1
-        pos_emb = self.pos_emb(torch.arange(self.max_length, device=feat.device))
-        pos_emb = repeat(pos_emb, "L D -> B L D", B=feat.shape[0])
-
-        feat = feat + pos_emb[:, position:position+1, :]
-        return feat
-
 
 class MixerModel(nn.Module):
     def __init__(
@@ -159,13 +121,10 @@ class MixerModel(nn.Module):
         d_model: int,
         n_layer: int,
         d_intermediate: int,
-        stoch_dim: int,
-        action_dim: int,
+        vocab_size: int,
         ssm_cfg=None,
         attn_layer_idx=None,
         attn_cfg=None,
-        pff_cfg=None,
-        dropout_p: float = 0.0,        
         norm_epsilon: float = 1e-5,
         rms_norm: bool = False,
         initializer_cfg=None,
@@ -178,19 +137,8 @@ class MixerModel(nn.Module):
         super().__init__()
         self.residual_in_fp32 = residual_in_fp32
 
-        self.action_dim = action_dim
-        self.feat_dim = d_model
+        self.embedding = nn.Embedding(vocab_size, d_model, **factory_kwargs)
 
-        # self.embedding = nn.Embedding(vocab_size, d_model, **factory_kwargs)
-
-        self.stem = nn.Sequential(
-            nn.Linear(stoch_dim+action_dim, d_model, bias=True, **factory_kwargs),
-            RMSNorm(d_model, eps=norm_epsilon, **factory_kwargs),
-            nn.SiLU(),
-            # nn.Linear(stoch_dim+action_dim, d_model, bias=True, **factory_kwargs),
-            # nn.modules.normalization.RMSNorm(d_model, **factory_kwargs),
-        )
-     
         # We change the order of residual and layer norm:
         # Instead of LN -> Attn / MLP -> Add, we do:
         # Add -> LN -> Attn / MLP / Mixer, returning both the residual branch (output of Add) and
@@ -200,9 +148,6 @@ class MixerModel(nn.Module):
         if self.fused_add_norm:
             if layer_norm_fn is None or rms_norm_fn is None:
                 raise ImportError("Failed to import Triton LayerNorm / RMSNorm kernels")
-        else:
-            self.dropout = nn.Dropout(dropout_p) # "Attention is all you need sec 5.4 dropout"
-        self.dropout_p = dropout_p
 
         self.layers = nn.ModuleList(
             [
@@ -212,8 +157,6 @@ class MixerModel(nn.Module):
                     ssm_cfg=ssm_cfg,
                     attn_layer_idx=attn_layer_idx,
                     attn_cfg=attn_cfg,
-                    pff_cfg=pff_cfg,
-                    dropout_p=dropout_p,
                     norm_epsilon=norm_epsilon,
                     rms_norm=rms_norm,
                     residual_in_fp32=residual_in_fp32,
@@ -244,17 +187,14 @@ class MixerModel(nn.Module):
             for i, layer in enumerate(self.layers)
         }
 
-    def forward(self, samples, action, inference_params=None, **mixer_kwargs):
-        action = F.one_hot(action.long(), self.action_dim).float()
-        hidden_states = self.stem(torch.cat([samples, action], dim=-1))
-            
+    def forward(self, input_ids, inference_params=None, **mixer_kwargs):
+        hidden_states = self.embedding(input_ids)
         residual = None
         for layer in self.layers:
             hidden_states, residual = layer(
                 hidden_states, residual, inference_params=inference_params, **mixer_kwargs
             )
         if not self.fused_add_norm:
-            hidden_states = self.dropout(hidden_states)
             residual = (hidden_states + residual) if residual is not None else hidden_states
             hidden_states = self.norm_f(residual.to(dtype=self.norm_f.weight.dtype))
         else:
@@ -267,13 +207,12 @@ class MixerModel(nn.Module):
                 residual=residual,
                 prenorm=False,
                 residual_in_fp32=self.residual_in_fp32,
-                is_rms_norm=isinstance(self.norm_f, RMSNorm),
-                dropout_p=self.dropout_p if self.training else 0.0
+                is_rms_norm=isinstance(self.norm_f, RMSNorm)
             )
         return hidden_states
 
 
-class MambaWrapperModel(nn.Module, GenerationMixin):
+class MambaLMHeadModel(nn.Module, GenerationMixin):
 
     def __init__(
         self,
@@ -286,37 +225,34 @@ class MambaWrapperModel(nn.Module, GenerationMixin):
         d_model = config.d_model
         n_layer = config.n_layer
         d_intermediate = config.d_intermediate
-        stoch_dim = config.stoch_dim
-        action_dim = config.action_dim
+        vocab_size = config.vocab_size
         ssm_cfg = config.ssm_cfg
         attn_layer_idx = config.attn_layer_idx
         attn_cfg = config.attn_cfg
-        pff_cfg = config.pff_cfg 
-        dropout_p = config.dropout_p
         rms_norm = config.rms_norm
         residual_in_fp32 = config.residual_in_fp32
         fused_add_norm = config.fused_add_norm
+        pad_vocab_size_multiple = config.pad_vocab_size_multiple
         factory_kwargs = {"device": device, "dtype": dtype}
 
         super().__init__()
+        if vocab_size % pad_vocab_size_multiple != 0:
+            vocab_size += pad_vocab_size_multiple - (vocab_size % pad_vocab_size_multiple)
         self.backbone = MixerModel(
             d_model=d_model,
             n_layer=n_layer,
             d_intermediate=d_intermediate,
-            stoch_dim=stoch_dim,
-            action_dim=action_dim,
+            vocab_size=vocab_size,
             ssm_cfg=ssm_cfg,
-            pff_cfg = pff_cfg,         
             attn_layer_idx=attn_layer_idx,
             attn_cfg=attn_cfg,
-            dropout_p=dropout_p,
             rms_norm=rms_norm,
             initializer_cfg=initializer_cfg,
             fused_add_norm=fused_add_norm,
             residual_in_fp32=residual_in_fp32,
             **factory_kwargs,
         )
-        # self.lm_head = nn.Linear(d_model, vocab_size, bias=False, **factory_kwargs)
+        self.lm_head = nn.Linear(d_model, vocab_size, bias=False, **factory_kwargs)
 
         # Initialize weights and apply final processing
         self.apply(
@@ -326,16 +262,48 @@ class MambaWrapperModel(nn.Module, GenerationMixin):
                 **(initializer_cfg if initializer_cfg is not None else {}),
             )
         )
+        self.tie_weights()
+
+    def tie_weights(self):
+        if self.config.tie_embeddings:
+            self.lm_head.weight = self.backbone.embedding.weight
 
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
         return self.backbone.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
 
-    def forward(self, samples, action, inference_params=None, num_last_tokens=0, **mixer_kwargs):
+    def forward(self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0, **mixer_kwargs):
         """
+        "position_ids" is just to be compatible with Transformer generation. We don't use it.
         num_last_tokens: if > 0, only return the logits for the last n tokens
         """
-        hidden_states = self.backbone(samples, action, inference_params=inference_params, **mixer_kwargs)
+        hidden_states = self.backbone(input_ids, inference_params=inference_params, **mixer_kwargs)
         if num_last_tokens > 0:
             hidden_states = hidden_states[:, -num_last_tokens:]
-        # lm_logits = self.lm_head(hidden_states)
-        return hidden_states
+        lm_logits = self.lm_head(hidden_states)
+        CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
+        return CausalLMOutput(logits=lm_logits)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name, device=None, dtype=None, **kwargs):
+        config_data = load_config_hf(pretrained_model_name)
+        config = MambaConfig(**config_data)
+        model = cls(config, device=device, dtype=dtype, **kwargs)
+        model.load_state_dict(load_state_dict_hf(pretrained_model_name, device=device, dtype=dtype))
+        return model
+
+    def save_pretrained(self, save_directory):
+        """
+        Minimal implementation of save_pretrained for MambaLMHeadModel.
+        Save the model and its configuration file to a directory.
+        """
+        # Ensure save_directory exists
+        os.makedirs(save_directory, exist_ok=True)
+
+        # Save the model's state_dict
+        model_path = os.path.join(save_directory, 'pytorch_model.bin')
+        torch.save(self.state_dict(), model_path)
+
+        # Save the configuration of the model
+        config_path = os.path.join(save_directory, 'config.json')
+        with open(config_path, 'w') as f:
+            json.dump(self.config.__dict__, f, indent=4)

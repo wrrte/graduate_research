@@ -274,14 +274,14 @@ class Mamba(nn.Module):
                 self.d_model * self.expand,
                 self.d_conv,
                 device=self.conv1d.weight.device,
-                dtype=self.conv1d.weight.dtype if inference_params.key_value_dtype is None else inference_params.key_value_dtype,
+                dtype=self.conv1d.weight.dtype,
             )
             ssm_state = torch.zeros(
                 batch_size,
                 self.d_model * self.expand,
                 self.d_state,
                 device=self.dt_proj.weight.device,
-                dtype=self.in_proj.weight.dtype if inference_params.key_value_dtype is None else inference_params.key_value_dtype,
+                dtype=self.dt_proj.weight.dtype,
                 # dtype=torch.float32,
             )
             inference_params.key_value_memory_dict[self.layer_idx] = (conv_state, ssm_state)

@@ -159,7 +159,7 @@ class MHA(nn.Module):
             rotary_sin=rotary_sin,
             cache_seqlens=cache_seqlens,
             softmax_scale=self.softmax_scale,
-            causal=False,
+            causal=self.causal,
             rotary_interleaved=self.rotary_emb.interleaved if self.rotary_emb_dim > 0 else False,
         )
         return context
@@ -176,7 +176,7 @@ class MHA(nn.Module):
             k = torch.repeat_interleave(k, dim=2, repeats=self.num_heads // self.num_heads_kv)
             v = torch.repeat_interleave(v, dim=2, repeats=self.num_heads // self.num_heads_kv)
             return F.scaled_dot_product_attention(
-                q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=False, scale=self.softmax_scale
+                q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=self.causal, scale=self.softmax_scale
             ).transpose(1, 2)
         else:
             batch = q.shape[0]
@@ -195,7 +195,7 @@ class MHA(nn.Module):
                 kv[:, :, 1],
                 cache_seqlens=cache_seqlens,
                 softmax_scale=self.softmax_scale,
-                causal=False,
+                causal=self.causal,
             )
 
     def forward(self, x, inference_params=None):
@@ -209,7 +209,7 @@ class MHA(nn.Module):
         """
         if inference_params is not None and self.layer_idx not in inference_params.key_value_memory_dict:
             inference_params.key_value_memory_dict[self.layer_idx] = self.allocate_inference_cache(
-                x.shape[0], inference_params.max_seqlen, dtype=x.dtype if inference_params.key_value_dtype is None else inference_params.key_value_dtype
+                x.shape[0], inference_params.max_seqlen, dtype=x.dtype
             )
         seqlen_offset = (
             0
@@ -290,5 +290,5 @@ class MHA(nn.Module):
         context = rearrange(context, "... h d -> ... (h d)")
         if self.mlp_dim > 0:
             context = torch.cat([context, x_mlp], dim=-1)
-        out = self.out_proj(context)    
+        out = self.out_proj(context)
         return out
