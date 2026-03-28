@@ -410,9 +410,14 @@ class WorldModel(nn.Module):
         return post_flattened_sample, post_feat    
     @profile
     # only called when using Transformer
-    def predict_next(self, last_flattened_sample, action, log_video=True):
+    def predict_next(self, last_flattened_sample, action, log_video=True, r=None):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
-            dist_feat = self.sequence_model.forward_with_kv_cache(last_flattened_sample, action)
+            if self.model == 'Transformer':
+                dist_feat = self.sequence_model.forward_with_kv_cache(last_flattened_sample, action)
+            else:
+                # Mamba에 r 전달
+                dist_feat = self.sequence_model(last_flattened_sample, action, r=r)
+                
             prior_logits = self.dist_head.forward_prior(dist_feat)
 
             # decoding
@@ -422,12 +427,17 @@ class WorldModel(nn.Module):
                 obs_hat = self.image_decoder(prior_flattened_sample)
             else:
                 obs_hat = None
-            reward_hat = self.reward_decoder(dist_feat)
-            reward_hat = self.symlog_twohot_loss_func.decode(reward_hat)
+            reward_logits = self.reward_decoder(dist_feat)
+            reward_hat = self.symlog_twohot_loss_func.decode(reward_logits)
+            
+            # 다음 스텝 Mamba의 r 인자로 넘겨줄 미분 가능한 확률 벡터
+            reward_probs = F.softmax(reward_logits, dim=-1)
+            
             termination_hat = self.termination_decoder(dist_feat)
             termination_hat = termination_hat > 0
 
-        return obs_hat, reward_hat, termination_hat, prior_flattened_sample, dist_feat
+        # 반환값에 reward_probs 추가
+        return obs_hat, reward_hat, reward_probs, termination_hat, prior_flattened_sample, dist_feat
     @profile
     def stright_throught_gradient(self, logits, sample_mode="random_sample"):
         dist = OneHotCategorical(logits=logits)
@@ -470,33 +480,46 @@ class WorldModel(nn.Module):
                      imagine_batch_size, imagine_batch_length, log_video, logger, global_step):
 
         self.init_imagine_buffer(imagine_batch_size, imagine_batch_length, dtype=self.tensor_dtype, device=self.device)
-        self.sequence_model.reset_kv_cache_list(imagine_batch_size, dtype=self.tensor_dtype)
+        if self.model == 'Transformer':
+            self.sequence_model.reset_kv_cache_list(imagine_batch_size, dtype=self.tensor_dtype)
         obs_hat_list = []
             
         # context
         context_latent = self.encode_obs(sample_obs)
+        
+        # 첫 번째 스텝을 위한 초기 r 설정 (0으로 초기화)
+        last_r_encoded = torch.zeros(imagine_batch_size, 1, 255, dtype=self.tensor_dtype, device=self.device)
 
+        # 1. 첫 번째 루프 (Context 처리)
         for i in range(sample_obs.shape[1]):  # context_length is sample_obs.shape[1]
-            last_obs_hat, last_reward_hat, last_termination_hat, last_latent, last_dist_feat = self.predict_next(
+            last_obs_hat, last_reward_hat, last_reward_probs, last_termination_hat, last_latent, last_dist_feat = self.predict_next(
                 context_latent[:, i:i+1],
                 sample_action[:, i:i+1],
-                log_video=log_video
+                log_video=log_video,
+                r=last_r_encoded
             )
+            # [수정됨] 예측된 보상 확률 분포를 다음 스텝의 r_{t-1}로 업데이트
+            last_r_encoded = last_reward_probs.to(self.tensor_dtype)
+
         self.sample_buffer[:, 0:1] = last_latent
         self.dist_feat_buffer[:, 0:1] = last_dist_feat
 
-        # imagine
+        # 2. 두 번째 루프 (Imagine 생성)
         for i in range(imagine_batch_length):
             action, _ = agent.sample(torch.cat([self.sample_buffer[:, i:i+1], self.dist_feat_buffer[:, i:i+1]], dim=-1))
             self.action_buffer[:, i:i+1] = action
 
-            last_obs_hat, last_reward_hat, last_termination_hat, last_latent, last_dist_feat = self.predict_next(
-                self.sample_buffer[:, i:i+1], self.action_buffer[:, i:i+1], log_video=log_video)
+            last_obs_hat, last_reward_hat, last_reward_probs, last_termination_hat, last_latent, last_dist_feat = self.predict_next(
+                self.sample_buffer[:, i:i+1], self.action_buffer[:, i:i+1], log_video=log_video, r=last_r_encoded)
 
             self.sample_buffer[:, i+1:i+2] = last_latent
             self.dist_feat_buffer[:, i+1:i+2] = last_dist_feat
             self.reward_hat_buffer[:, i:i+1] = last_reward_hat
             self.termination_hat_buffer[:, i:i+1] = last_termination_hat
+            
+            # [수정됨] 예측된 보상 확률 분포를 다음 스텝의 r_{t-1}로 업데이트
+            last_r_encoded = last_reward_probs.to(self.tensor_dtype)
+
             if log_video:
                 obs_hat_list.append(last_obs_hat[::imagine_batch_size//4] * 255)  # uniform sample vec_env
 
@@ -629,12 +652,20 @@ class WorldModel(nn.Module):
             # decoding image
             obs_hat = self.image_decoder(flattened_sample)
 
+            # ---------------------------------------------------------
+            # [NEW] Selection Mechanism을 위한 Reward 인코딩 및 Shift 적용
+            # ---------------------------------------------------------
+            r_twohot = self.symlog_twohot_loss_func.encode(reward).to(flattened_sample.dtype)
+            r_shifted = torch.zeros_like(r_twohot)
+            r_shifted[:, 1:, :] = r_twohot[:, :-1, :]
+            # ---------------------------------------------------------
+
             # dynamics models
             if self.model == 'Transformer':
                 temporal_mask = get_subsequent_mask_with_batch_length(batch_length, flattened_sample.device)
                 dist_feat = self.sequence_model(flattened_sample, action, temporal_mask)
             else:
-                dist_feat = self.sequence_model(flattened_sample, action)
+                dist_feat = self.sequence_model(flattened_sample, action, r=r_shifted)
             prior_logits = self.dist_head.forward_prior(dist_feat)
 
             # decoding reward and termination with dist_feat
@@ -674,9 +705,9 @@ class WorldModel(nn.Module):
             height, width, _ = final_image.shape
             scale_factor = 6
             final_image_resized = cv2.resize(final_image, (width * scale_factor, height * scale_factor), interpolation=cv2.INTER_NEAREST)
-            logger.log("Reconstruct/Reconstructed images", [final_image_resized], global_step=global_step)
+            if logger is not None:
+                logger.log("Reconstruct/Reconstructed images", [final_image_resized], global_step=global_step)
                          
-            
 
         return  reconstruction_loss.item(), reward_loss.item(), termination_loss.item(), \
                 dynamics_loss.item(), dynamics_real_kl_div.item(), representation_loss.item(), \
