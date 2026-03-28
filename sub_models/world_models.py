@@ -489,6 +489,7 @@ class WorldModel(nn.Module):
             self.reward_hat_buffer = torch.zeros(scalar_size, dtype=dtype, device=device)
             self.termination_hat_buffer = torch.zeros(scalar_size, dtype=dtype, device=device)
     @profile
+    #transformer도 첫 번째 루프에서는 reward를 예측하는 게 아니라 받아오는 식으로 수정해야 함. 지금은 살짝 혼종 상태.
     def imagine_data(self, agent: agents.ActorCriticAgent, sample_obs, sample_action,
                      imagine_batch_size, imagine_batch_length, log_video, logger, global_step):
 
@@ -545,7 +546,8 @@ class WorldModel(nn.Module):
         return torch.cat([self.sample_buffer, self.dist_feat_buffer], dim=-1), self.action_buffer, None, None, self.reward_hat_buffer, self.termination_hat_buffer
 
     @profile
-    def imagine_data2(self, agent: agents.ActorCriticAgent, sample_obs, sample_action,
+    # [수정 1] 매개변수에 sample_reward를 추가합니다!
+    def imagine_data2(self, agent: agents.ActorCriticAgent, sample_obs, sample_action, sample_reward,
                      imagine_batch_size, imagine_batch_length, log_video, logger, global_step):
         self.init_imagine_buffer(imagine_batch_size, imagine_batch_length, dtype=self.tensor_dtype, device=self.device)
         # context
@@ -569,33 +571,43 @@ class WorldModel(nn.Module):
         else:
             inference_params = InferenceParams(max_seqlen=max_length, max_batch_size=imagine_batch_size, key_value_dtype=torch.bfloat16 if self.use_amp else None)
 
-        
-        def get_hidden_state(samples, action, inference_params):
+        def get_hidden_state(samples, action, inference_params, r=None):
             decoding = inference_params.seqlen_offset > 0
-
             if not self.use_cg or not decoding:
                 hidden_state = self.sequence_model(
                     samples, action,
                     inference_params=inference_params,
-                    # num_last_tokens=1,
-                # ).logits.squeeze(dim=1)
+                    r=r
                 )
             else:
                 hidden_state = self.sequence_model._decoding_cache.run(
-                    samples, action, inference_params.seqlen_offset
+                    samples, action, inference_params.seqlen_offset,
+                    r=r 
                 )
             return hidden_state        
 
         def should_stop(current_token, inference_params):
             if inference_params.seqlen_offset == 0:
                 return False
-            # if eos_token_id is not None and (current_token == eos_token_id).all():
-            #     return True
             if inference_params.seqlen_offset >= max_length:
                 return True
             return False
+
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp and not self.use_cg):
-            context_dist_feat = get_hidden_state(context_latent, sample_action, inference_params)
+            # ------------------------------------------------------------------
+            # [수정 2] 진짜 보상(sample_reward)을 활용한 완벽한 Context 병렬 처리!
+            # ------------------------------------------------------------------
+            # 1. 실제 보상을 255차원 Two-hot으로 변환
+            r_twohot = self.symlog_twohot_loss_func.encode(sample_reward).to(self.tensor_dtype)
+            
+            # 2. t-1 시점을 참조하기 위해 텐서를 우측으로 한 칸 Shift
+            context_r = torch.zeros_like(r_twohot)
+            context_r[:, 1:, :] = r_twohot[:, :-1, :]
+            
+            # 3. 비어있는 영벡터가 아닌, 완벽하게 정렬된 실제 보상 궤적을 Mamba에 주입
+            context_dist_feat = get_hidden_state(context_latent, sample_action, inference_params, r=context_r)
+            # ------------------------------------------------------------------
+            
             inference_params.seqlen_offset += context_dist_feat.shape[1]
             context_prior_logits = self.dist_head.forward_prior(context_dist_feat)
             context_prior_sample = self.stright_throught_gradient(context_prior_logits)
@@ -606,23 +618,27 @@ class WorldModel(nn.Module):
             self.dist_feat_buffer[:, 0:1] = context_dist_feat[:, -1:]
             action_list, old_logits_list = [], []
             i = 0
+            
+            # 상상(Imagine) 루프 시작 전, 진짜 보상 궤적을 토대로 형성된 
+            # 마지막 Context 스텝의 은닉 상태로 보상을 예측하여 넘겨줌
+            context_last_reward_logits = self.reward_decoder(context_dist_feat[:, -1:])
+            last_r_encoded = F.softmax(context_last_reward_logits, dim=-1).to(self.tensor_dtype)
+
+            # 자가회귀(Autoregressive) 상상 루프 (이하 동일)
             while not should_stop(sample_list[-1], inference_params):
                 action, logits = agent.sample(torch.cat([self.sample_buffer[:, i:i+1], self.dist_feat_buffer[:, i:i+1]], dim=-1))
                 action_list.append(action)
                 self.action_buffer[:, i:i+1] = action
                 old_logits_list.append(logits)
-                dist_feat = get_hidden_state(sample_list[-1], action_list[-1], inference_params)
+                
+                dist_feat = get_hidden_state(sample_list[-1], action_list[-1], inference_params, r=last_r_encoded)
                 dist_feat_list.append(dist_feat)
                 self.dist_feat_buffer[:, i+1:i+2] = dist_feat
                 inference_params.seqlen_offset += sample_list[-1].shape[1]
-                # if repetition_penalty == 1.0:
-                #     sampled_tokens = sample_tokens(scores[-1], inference_params)
-                # else:
-                #     logits = modify_logit_for_repetition_penalty(
-                #         scores[-1].clone(), sequences_cat, repetition_penalty
-                #     )
-                #     sampled_tokens = sample_tokens(logits, inference_params)
-                #     sequences_cat = torch.cat([sequences_cat, sampled_tokens], dim=1)
+
+                current_reward_logits = self.reward_decoder(dist_feat)
+                last_r_encoded = F.softmax(current_reward_logits, dim=-1).to(self.tensor_dtype)
+
                 prior_logits = self.dist_head.forward_prior(dist_feat_list[-1])
                 prior_sample = self.stright_throught_gradient(prior_logits)
                 prior_flattened_sample = self.flatten_sample(prior_sample)

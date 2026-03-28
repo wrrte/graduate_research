@@ -82,7 +82,7 @@ def world_model_imagine_data(replay_buffer: ReplayBuffer,
         )
     elif world_model.model in ['Mamba', 'Mamba2', 'Mamba3']:
          latent, action, old_logits, context_latent, reward_hat, termination_hat = world_model.imagine_data2(
-            agent, sample_obs, sample_action,
+            agent, sample_obs, sample_action, sample_reward,
             imagine_batch_size=imagine_batch_size,
             imagine_batch_length=imagine_batch_length,
             log_video=log_video,
