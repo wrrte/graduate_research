@@ -4,4 +4,5 @@ from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, mamba_inne
 from mamba_ssm.modules.mamba_simple import Mamba
 from mamba_ssm.modules.mamba2 import Mamba2
 from mamba_ssm.modules.mamba3 import Mamba3
-from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
+from mamba_ssm.models.mixer_seq_simple import MambaWrapperModel, MambaConfig
+from mamba_ssm.utils.generation import InferenceParams, update_graph_cache
