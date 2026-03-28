@@ -304,7 +304,20 @@ class WorldModel(nn.Module):
                     'd_state': config.Models.WorldModel.Mamba.ssm_cfg.d_state, 
                     'layer': 'Mamba2'}
                 )
-            self.sequence_model = MambaWrapperModel(mamba_config)                      
+            self.sequence_model = MambaWrapperModel(mamba_config)     
+        elif self.model == 'Mamba3':
+            mamba_config = MambaConfig(
+                d_model=self.hidden_state_dim, 
+                d_intermediate=config.Models.WorldModel.Mamba.d_intermediate,
+                n_layer=config.Models.WorldModel.Mamba.n_layer,
+                stoch_dim=self.stoch_flattened_dim,
+                action_dim=action_dim,
+                dropout_p=config.Models.WorldModel.Dropout,
+                ssm_cfg={
+                    'd_state': config.Models.WorldModel.Mamba.ssm_cfg.d_state, 
+                    'layer': 'Mamba3'}
+                )
+            self.sequence_model = MambaWrapperModel(mamba_config)                 
         else:
             raise ValueError(f"Unknown dynamics model: {self.model}")               
         
