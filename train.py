@@ -114,6 +114,7 @@ def joint_train_world_model_agent(config, logdir,
     current_ob, info = env.reset()
     context_obs = deque(maxlen=config.JointTrainAgent.RealityContextLength)
     context_action = deque(maxlen=config.JointTrainAgent.RealityContextLength)
+    context_reward = deque(maxlen=config.JointTrainAgent.RealityContextLength)
 
     # sample and train
     for total_steps in tqdm(range(config.JointTrainAgent.SampleMaxSteps // config.JointTrainAgent.NumEnvs), desc='Training'):
@@ -128,10 +129,18 @@ def joint_train_world_model_agent(config, logdir,
                     context_latent = world_model.encode_obs(torch.cat(list(context_obs), dim=1).to(world_model.device))
                     model_context_action = np.stack(list(context_action))
                     model_context_action = rearrange(torch.Tensor(model_context_action).to(world_model.device), "L -> 1 L")
+                    
+                    # [수정 2] Reward를 numpy로 쌓고 차원을 (1, L)로 재배열 (Criterion 3 해결)
+                    model_context_reward = np.stack(list(context_reward))
+                    model_context_reward = rearrange(torch.Tensor(model_context_reward).to(world_model.device), "L -> 1 L")
+
                     if world_model.model == 'Transformer':
                         prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(context_latent, model_context_action)
                     elif world_model.model in ['Mamba', 'Mamba2', 'Mamba3']:
-                        prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(context_latent, model_context_action)
+                        # [수정 3] calc_last_dist_feat에 r 매개변수로 보상 기록 전달! (Criterion 1 & 2 해결)
+                        prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(
+                            context_latent, model_context_action, r=model_context_reward
+                        )
                     action = agent.sample_as_env_action(
                         torch.cat([prior_flattened_sample, last_dist_feat], dim=-1),
                         greedy=False
@@ -144,6 +153,9 @@ def joint_train_world_model_agent(config, logdir,
 
         ob, reward, is_last, info = env.step(action)
         replay_buffer.append(current_ob, action, reward, info['is_terminal'])
+
+        if replay_buffer.ready('world_model'):
+            context_reward.append(reward)
 
         sum_reward += reward
         current_ob = ob
@@ -163,6 +175,7 @@ def joint_train_world_model_agent(config, logdir,
             ob, info = env.reset()
             context_obs.clear()
             context_action.clear()
+            context_reward.clear()
 
 
 

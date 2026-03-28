@@ -387,13 +387,23 @@ class WorldModel(nn.Module):
             flattened_sample = self.flatten_sample(sample)
         return flattened_sample
     @profile
-    def calc_last_dist_feat(self, latent, action, inference_params=None):
+    # [수정] r=None 매개변수 추가
+    def calc_last_dist_feat(self, latent, action, inference_params=None, r=None):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             if self.model == 'Transformer':
                 temporal_mask = get_subsequent_mask(latent)
                 dist_feat = self.sequence_model(latent, action, temporal_mask)
             else:
-                dist_feat = self.sequence_model(latent, action, inference_params)
+                # [수정] 진짜 보상을 Two-hot 인코딩하고 시간축으로 Shift하여 r_{t-1} 형태로 Mamba에 주입
+                if r is not None:
+                    r_twohot = self.symlog_twohot_loss_func.encode(r).to(latent.dtype)
+                    r_shifted = torch.zeros_like(r_twohot)
+                    r_shifted[:, 1:, :] = r_twohot[:, :-1, :]
+                else:
+                    r_shifted = None
+                    
+                dist_feat = self.sequence_model(latent, action, inference_params=inference_params, r=r_shifted)
+                
             last_dist_feat = dist_feat[:, -1:]
             prior_logits = self.dist_head.forward_prior(last_dist_feat)
             prior_sample = self.stright_throught_gradient(prior_logits, sample_mode="random_sample")
