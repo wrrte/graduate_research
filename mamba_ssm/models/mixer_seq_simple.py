@@ -23,6 +23,8 @@ from mamba_ssm.modules.block import Block
 from mamba_ssm.utils.generation import GenerationMixin
 from mamba_ssm.utils.hf import load_config_hf, load_state_dict_hf
 
+from mamba_ssm.modules.mamba3 import Mamba3
+
 try:
     from mamba_ssm.ops.triton.layer_norm import RMSNorm, layer_norm_fn, rms_norm_fn
 except ImportError:
@@ -58,14 +60,19 @@ def create_block(
         # Create a copy of the config to modify
         ssm_cfg = copy.deepcopy(ssm_cfg) if ssm_cfg is not None else {}
         ssm_layer = ssm_cfg.pop("layer", "Mamba1")
-        if ssm_layer not in ["Mamba1", "Mamba2"]:
-            raise ValueError(f"Invalid ssm_layer: {ssm_layer}, only support Mamba1 and Mamba2")
-        mixer_cls = partial(
-            Mamba2 if ssm_layer == "Mamba2" else Mamba,
-            layer_idx=layer_idx,
-            **ssm_cfg,
-            **factory_kwargs
-        )
+        
+        # Mamba3 지원을 위해 검사 및 분기문 추가
+        if ssm_layer not in ["Mamba1", "Mamba2", "Mamba3"]:
+            raise ValueError(f"Invalid ssm_layer: {ssm_layer}, only support Mamba1, Mamba2 and Mamba3")
+        
+        if ssm_layer == "Mamba3":
+            if Mamba3 is None:
+                raise ImportError("Failed to import Mamba3. Please check if mamba_ssm is fully updated.")
+            mixer_cls = partial(Mamba3, layer_idx=layer_idx, **ssm_cfg, **factory_kwargs)
+        elif ssm_layer == "Mamba2":
+            mixer_cls = partial(Mamba2, layer_idx=layer_idx, **ssm_cfg, **factory_kwargs)
+        else:
+            mixer_cls = partial(Mamba, layer_idx=layer_idx, **ssm_cfg, **factory_kwargs)
     else:
         mixer_cls = partial(MHA, layer_idx=layer_idx, **attn_cfg, **factory_kwargs)
     norm_cls = partial(

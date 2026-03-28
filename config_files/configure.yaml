@@ -43,7 +43,7 @@ JointTrainAgent:
 Models:
   WorldModel:
     dtype: float32
-    Backbone: Mamba2 # Mamba, Mamba2, Transformer
+    Backbone: Mamba3 # Mamba, Mamba2, Mamba3, Transformer
     InChannels: 3
     Act: SiLU
     CategoricalDim: 32
