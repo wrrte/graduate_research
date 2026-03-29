@@ -363,7 +363,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 self.d_conv,
                 self.conv1d.weight.shape[0],
                 device=self.conv1d.weight.device,
-                dtype=self.conv1d.weight.dtype,
+                dtype=self.conv1d.weight.dtype if inference_params.key_value_dtype is None else inference_params.key_value_dtype,
             ).transpose(1, 2)
             ssm_state = torch.zeros(
                 batch_size,
@@ -371,7 +371,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 self.headdim,
                 self.d_state,
                 device=self.in_proj.weight.device,
-                dtype=self.in_proj.weight.dtype,
+                dtype=self.in_proj.weight.dtype if inference_params.key_value_dtype is None else inference_params.key_value_dtype,
             )
             inference_params.key_value_memory_dict[self.layer_idx] = (conv_state, ssm_state)
         else:

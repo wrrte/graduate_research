@@ -471,7 +471,7 @@ class Mamba3(nn.Module):
     def _get_states_from_cache(self, inference_params, batch_size, initialize_states=False):
         assert self.layer_idx is not None
         device = self.in_proj.weight.device
-        dtype = self.in_proj.weight.dtype
+        dtype = self.in_proj.weight.dtype if inference_params.key_value_dtype is None else inference_params.key_value_dtype
 
         if self.layer_idx not in inference_params.key_value_memory_dict:
             angle_dt_state = torch.zeros(
