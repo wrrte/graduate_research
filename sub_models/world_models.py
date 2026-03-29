@@ -255,7 +255,7 @@ class WorldModel(nn.Module):
         self.imagine_batch_length = -1
         self.device = device # Maybe it's not needed
         self.model = config.Models.WorldModel.Backbone
-        self.r_dim = config.Models.WorldModel.r_dim
+        self.r_dim = 255
         self.max_grad_norm = config.Models.WorldModel.Max_grad_norm  
         max_seq_length = max(config.JointTrainAgent.BatchLength, 
                              config.JointTrainAgent.ImagineContextLength + config.JointTrainAgent.ImagineBatchLength, 
