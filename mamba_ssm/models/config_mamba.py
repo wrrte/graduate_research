@@ -9,6 +9,7 @@ class MambaConfig:
     n_layer: int = 64
     stoch_dim: int = 1024
     action_dim: int = 5
+    r_dim: int = 255
     ssm_cfg: dict = field(default_factory=dict)
     attn_layer_idx: list = field(default_factory=list)
     attn_cfg: dict = field(default_factory=dict)
