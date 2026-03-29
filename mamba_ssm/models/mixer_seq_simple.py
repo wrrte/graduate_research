@@ -168,6 +168,7 @@ class MixerModel(nn.Module):
         d_intermediate: int,
         stoch_dim: int,
         action_dim: int,
+        r_dim: int,
         ssm_cfg=None,
         attn_layer_idx=None,
         attn_cfg=None,
@@ -190,8 +191,10 @@ class MixerModel(nn.Module):
 
         # self.embedding = nn.Embedding(vocab_size, d_model, **factory_kwargs)
 
+        # [수정] stem 레이어의 입력 차원을 (latent + action + r)로 확장
+        in_channels = stoch_dim + action_dim + r_dim
         self.stem = nn.Sequential(
-            nn.Linear(stoch_dim+action_dim, d_model, bias=True, **factory_kwargs),
+            nn.Linear(in_channels, d_model, bias=True, **factory_kwargs),
             RMSNorm(d_model, eps=norm_epsilon, **factory_kwargs),
             nn.SiLU(),
             # nn.Linear(stoch_dim+action_dim, d_model, bias=True, **factory_kwargs),
@@ -251,9 +254,9 @@ class MixerModel(nn.Module):
             for i, layer in enumerate(self.layers)
         }
 
-    def forward(self, samples, action, inference_params=None, **mixer_kwargs):
-        action = F.one_hot(action.long(), self.action_dim).float()
-        hidden_states = self.stem(torch.cat([samples, action], dim=-1))
+    def forward(self, mamba_input, inference_params=None, **mixer_kwargs):
+        # action = F.one_hot(action.long(), self.action_dim).float()
+        hidden_states = self.stem(mamba_input)
             
         residual = None
         for layer in self.layers:
@@ -295,6 +298,7 @@ class MambaWrapperModel(nn.Module, GenerationMixin):
         d_intermediate = config.d_intermediate
         stoch_dim = config.stoch_dim
         action_dim = config.action_dim
+        r_dim = config.r_dim
         ssm_cfg = config.ssm_cfg
         attn_layer_idx = config.attn_layer_idx
         attn_cfg = config.attn_cfg
@@ -312,6 +316,7 @@ class MambaWrapperModel(nn.Module, GenerationMixin):
             d_intermediate=d_intermediate,
             stoch_dim=stoch_dim,
             action_dim=action_dim,
+            r_dim=r_dim,
             ssm_cfg=ssm_cfg,
             pff_cfg = pff_cfg,         
             attn_layer_idx=attn_layer_idx,
@@ -337,11 +342,11 @@ class MambaWrapperModel(nn.Module, GenerationMixin):
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
         return self.backbone.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
 
-    def forward(self, samples, action, inference_params=None, num_last_tokens=0, **mixer_kwargs):
+    def forward(self, mamba_input, inference_params=None, num_last_tokens=0, **mixer_kwargs):
         """
         num_last_tokens: if > 0, only return the logits for the last n tokens
         """
-        hidden_states = self.backbone(samples, action, inference_params=inference_params, **mixer_kwargs)
+        hidden_states = self.backbone(mamba_input, inference_params=inference_params, **mixer_kwargs)
         if num_last_tokens > 0:
             hidden_states = hidden_states[:, -num_last_tokens:]
         # lm_logits = self.lm_head(hidden_states)
