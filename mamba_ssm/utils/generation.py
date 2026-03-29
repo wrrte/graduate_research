@@ -682,8 +682,10 @@ def capture_graph(
     model, inference_params, batch_size, max_seqlen, embedding_dim, decoding_seqlen=1, mempool=None, n_warmups=2
 ):
     device = next(iter(model.parameters())).device
-    samples = torch.full((batch_size, decoding_seqlen, embedding_dim), 0, dtype=torch.long, device=device)
-    action = torch.full((batch_size, decoding_seqlen), 0, dtype=torch.long, device=device)
+    dtype = next(iter(model.parameters())).dtype # Float 데이터 보존
+
+    mamba_input_buffer = torch.zeros((batch_size, decoding_seqlen, embedding_dim), dtype=dtype, device=device)
+    
     seqlen_offset_og = inference_params.seqlen_offset
     inference_params.seqlen_offset = max_seqlen - decoding_seqlen
     inference_params.lengths_per_sample[:] = inference_params.seqlen_offset
@@ -695,8 +697,7 @@ def capture_graph(
         with torch.cuda.stream(s):
             for _ in range(n_warmups):
                 hidden_state = model(
-                    samples,
-                    action,
+                    mamba_input_buffer,
                     inference_params=inference_params,
                     num_last_tokens=decoding_seqlen,
                 )
@@ -712,15 +713,14 @@ def capture_graph(
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, pool=mempool):
             hidden_state = model(
-                samples, action,
+                mamba_input_buffer,
                 inference_params=inference_params,
                 num_last_tokens=decoding_seqlen,
             )
 
-    def run(new_sample, new_action, seqlen):
+    def run(new_mamba_input, seqlen):
         inference_params.lengths_per_sample[:] = seqlen
-        samples.copy_(new_sample)
-        action.copy_(new_action)
+        mamba_input_buffer.copy_(new_mamba_input)
         graph.replay()
         return hidden_state.clone()
 
