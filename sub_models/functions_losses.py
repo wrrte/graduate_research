@@ -35,8 +35,7 @@ class SymLogTwoHotLoss(nn.Module):
         self.register_buffer(
             'bins', torch.linspace(-20, 20, num_classes), persistent=False)
         
-    # r용 인코딩 부분 함수화.
-    def encode(self, target):
+    def forward(self, output, target):
         target = symlog(target)
         assert target.min() >= self.lower_bound and target.max() <= self.upper_bound
 
@@ -47,10 +46,6 @@ class SymLogTwoHotLoss(nn.Module):
         weight = weight.unsqueeze(-1)
 
         target_prob = (1-weight)*F.one_hot(index-1, self.num_classes) + weight*F.one_hot(index, self.num_classes)
-        return target_prob
-
-    def forward(self, output, target):
-        target_prob = self.encode(target)
 
         loss = -target_prob * F.log_softmax(output, dim=-1)
         loss = loss.sum(dim=-1)
