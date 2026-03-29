@@ -43,9 +43,6 @@ class Mamba3(nn.Module):
         is_mimo=False,
         mimo_rank=4,
         #-------------------------------------------
-        # RL Selection Mechanism configs (NEW)
-        r_dim=0, # Symlog two-hot encoding dimension for reward/score
-        #-------------------------------------------
         # Fused kernel and sharding options
         chunk_size=64, # Recommended: 64 for SISO, 64/mimo_rank for MIMO
         dropout=0.0,  # Just to absorb the kwarg
@@ -67,8 +64,6 @@ class Mamba3(nn.Module):
         self.is_outproj_norm=is_outproj_norm
         self.is_mimo = is_mimo
         self.mimo_rank = mimo_rank
-        self.r_dim = r_dim
-        
         if not self.is_mimo:
             self.mimo_rank = 1
         else:
@@ -134,14 +129,13 @@ class Mamba3(nn.Module):
                 **factory_kwargs
             )
 
-        # Output projection - V차원이 r_dim만큼 늘어나므로 d_inner 크기도 보정해야 함
-        self.d_inner_out = self.d_inner + (self.nheads * self.r_dim)
-        self.out_proj = nn.Linear(self.d_inner_out, self.d_model, bias=False, **factory_kwargs)
+        # Output projection
+        self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=False, **factory_kwargs)
 
-    def forward(self, u, r=None, seq_idx=None, cu_seqlens=None, inference_params=None):
+
+    def forward(self, u, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
         u: (batch, seqlen, hidden_dim)
-        r: (batch, seqlen, r_dim) - Symlog two-hot encoded scores (shifted to r_{t-1})
         Returns: same shape as u
         """
         batch, seqlen, dim = u.shape
@@ -173,13 +167,6 @@ class Mamba3(nn.Module):
         B = rearrange(B, "b l (r g n) -> b l r g n", r=self.mimo_rank, g=self.num_bc_heads)
         C = rearrange(C, "b l (r g n) -> b l r g n", r=self.mimo_rank, g=self.num_bc_heads)
         trap = rearrange(trap, "b l h -> b h l")
-
-        # --- [NEW] Selection Mechanism: r_{t-1} 을 x_t 에 Concatenate ---
-        if self.r_dim > 0 and r is not None:
-            # r 의 형태가 (batch, seqlen, r_dim) 이라고 가정
-            r_expanded = r.unsqueeze(2).expand(-1, -1, self.nheads, -1) # (b, l, h, r_dim)
-            x = torch.cat([x, r_expanded], dim=-1) # (b, l, h, p + r_dim)
-        # -----------------------------------------------------------------
 
         # Compute ADT, DT
         _A = -F.softplus(dd_A.to(torch.float32)) # (B, L, N)
