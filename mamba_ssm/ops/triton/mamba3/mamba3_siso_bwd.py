@@ -1773,5 +1773,5 @@ def _alloc_fn(size: int, alignment: int, stream: Optional[int]):
     return torch.empty(size, device="cuda", dtype=torch.int8)
 
 
-triton.set_allocator(_alloc_fn)
+# triton.set_allocator(_alloc_fn)
 
