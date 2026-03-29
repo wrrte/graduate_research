@@ -287,6 +287,7 @@ class WorldModel(nn.Module):
                 n_layer=config.Models.WorldModel.Mamba.n_layer,
                 stoch_dim=self.stoch_flattened_dim,
                 action_dim=action_dim,
+                r_dim=self.r_dim,
                 dropout_p=config.Models.WorldModel.Dropout,
                 ssm_cfg={
                     'd_state': config.Models.WorldModel.Mamba.ssm_cfg.d_state,
@@ -300,6 +301,7 @@ class WorldModel(nn.Module):
                 n_layer=config.Models.WorldModel.Mamba.n_layer,
                 stoch_dim=self.stoch_flattened_dim,
                 action_dim=action_dim,
+                r_dim=self.r_dim,
                 dropout_p=config.Models.WorldModel.Dropout,
                 ssm_cfg={
                     'd_state': config.Models.WorldModel.Mamba.ssm_cfg.d_state, 
@@ -313,6 +315,7 @@ class WorldModel(nn.Module):
                 n_layer=config.Models.WorldModel.Mamba.n_layer,
                 stoch_dim=self.stoch_flattened_dim,
                 action_dim=action_dim,
+                r_dim=self.r_dim,
                 dropout_p=config.Models.WorldModel.Dropout,
                 ssm_cfg={
                     'd_state': config.Models.WorldModel.Mamba.ssm_cfg.d_state, 
@@ -423,6 +426,7 @@ class WorldModel(nn.Module):
             prior_flattened_sample = self.flatten_sample(prior_sample)
         return prior_flattened_sample, last_dist_feat
     @profile
+    # 얘는 아직 _prepare_mamba_input 전처리 안 함. 나중에 쓰이면 넣자.
     def calc_last_post_feat(self, latent, action, current_obs, inference_params=None):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             embedding = self.encoder(current_obs)
