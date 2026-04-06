@@ -1,50 +1,47 @@
-# Drama: Mamba-Enabled Model-Based Reinforcement Learning Is Sample and Parameter Efficient
+## Drama: Mamba-Enabled Model-Based Reinforcement Learning Is Sample and Parameter Efficient
 
 This repository provides an implementation of [Drama](https://openreview.net/forum?id=7XIkRgYjK3&nesting=2&sort=date-desc): a Mamba/Mamba2 powered model based reinforcement learning agent.
 
 If you find Drama useful, please reference in your paper:
 ```
 @inproceedings{
-    wang2025drama,
-    title={Drama: Mamba-Enabled Model-Based Reinforcement Learning Is Sample and Parameter Efficient},
-    author={Wenlong Wang and Ivana dusparic and Yucheng Shi and Ke Zhang and Vinny Cahill},
-    booktitle={The Thirteenth International Conference on Learning Representations},
-    year={2025},
-    url={https://openreview.net/forum?id=7XIkRgYjK3}
+	wang2025drama,
+	title={Drama: Mamba-Enabled Model-Based Reinforcement Learning Is Sample and Parameter Efficient},
+	author={Wenlong Wang and Ivana dusparic and Yucheng Shi and Ke Zhang and Vinny Cahill},
+	booktitle={The Thirteenth International Conference on Learning Representations},
+	year={2025},
+	url={https://openreview.net/forum?id=7XIkRgYjK3}
 }
 ```
-
 
 ## Training and Evaluating Instructions
 ### Requirements
 
-- **Python**: 3.10
-- **Operating System**: Ubuntu 22.04 recommended (for Windows, use Docker)
+- **Base Container (Recommended)**: `nvcr.io/nvidia/pytorch:24.05-py3`
+- **Python**: 3.10 (included in the base container)
+- **CUDA**: 12.4.1 (included in the base container)
+- **PyTorch**: 2.4.x (included in the base container)
 
 ### Setup Instructions
 
-1. Create and activate a Conda environment:
-```
-conda create --name drama python=3.10
-conda activate drama
-```
-2. Note that because `mamba-ssm` in _requirements.txt_ requires `pytorch`, so one should install `pytorch` before _requirements.txt_.
-```
-pip install torch==2.2.1
-pip install -r reuqirements.txt
-```
-### Docker Instructions
----
+1. Start from the 24.05 NVIDIA PyTorch container.
 
-1. Build the Docker image
+2. Install packages in this order:
 ```
-docker build -f Dockerfile -t drama .
+pip install --upgrade pip setuptools wheel
+pip install packaging ninja
+pip install flash_attn==2.8.3 --no-build-isolation
+pip install -r requirements.txt
 ```
-2. Run the container with GPU support
-```
-docker run --gpus all -it --rm drama
-```
-_Note: Running via Docker may result in slower performance. Please refer [here](https://forums.docker.com/t/docker-extremely-slow-on-linux-and-windows/129752), it is recommended to reproduce the result in ubuntu OS._
+
+3. Do not reinstall `torch/torchvision/torchaudio` from separate CUDA wheels when using `24.05-py3`.
+
+### Recommended module versions (24.05 baseline)
+
+- `flash-attn==2.8.3`
+- `mamba-ssm==1.2.0.post1`
+- `causal-conv1d==1.6.1`
+- `triton`: use the version bundled with the container/PyTorch (do not pin separately)
 
 ### Training Instructions
 ---
