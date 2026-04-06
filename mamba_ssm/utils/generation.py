@@ -13,14 +13,13 @@ from einops import rearrange, repeat
 from torch import Tensor
 from torch.profiler import ProfilerActivity, profile, record_function
 
-# try:
-#     from transformers.generation import GreedySearchDecoderOnlyOutput, SampleDecoderOnlyOutput
-# except ImportError:
-#     GreedySearchDecoderOnlyOutput = namedtuple("GreedySearchDecoderOnlyOutput", ["sequences", "scores"])
-#     SampleDecoderOnlyOutput = namedtuple("SampleDecoderOnlyOutput", ["sequences", "scores"])
-# 에러가 뜬다면 GenerateDecoderOnlyOutput도 같은 식으로 해결하기
-
-from transformers.generation import GenerateDecoderOnlyOutput
+try:
+    from transformers.generation import GenerateDecoderOnlyOutput
+except ImportError:
+    try:
+        from transformers.generation.utils import GenerateDecoderOnlyOutput
+    except ImportError:
+        GenerateDecoderOnlyOutput = namedtuple("GenerateDecoderOnlyOutput", ["sequences", "scores"])
 
 @dataclass
 class InferenceParams:

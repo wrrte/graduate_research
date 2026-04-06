@@ -195,62 +195,8 @@ def mamba3_siso_fwd_kernel(
     scale_store_ptr = Scale_store + pid_batch * stride_scale_store_batch + pid_head * stride_scale_store_head + seq_offset * stride_scale_store_seqlen
     gamma_store_ptr = Gamma_store + pid_batch * stride_gamma_store_batch + pid_head * stride_gamma_store_head + seq_offset * stride_gamma_store_seqlen
 
-    if RETURN_FINAL_STATES:
-        final_ssm_state_ptr = Final_SSM_State + seq_idx * stride_final_ssm_state_seq + pid_head * stride_final_ssm_state_head
-        final_k_state_ptr = Final_K_State + seq_idx * stride_final_k_state_seq + pid_head * stride_final_k_state_head
-
-    # Create TMA tensor descriptors
-    q_desc = tl.make_tensor_descriptor(
-        q_ptr,
-        shape=[seqlen, headdim_qk],
-        strides=[stride_q_seqlen, stride_q_qkdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_QK],
-    )
-    k_desc = tl.make_tensor_descriptor(
-        k_ptr,
-        shape=[seqlen, headdim_qk],
-        strides=[stride_k_seqlen, stride_k_qkdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_QK],
-    )
-    v_desc = tl.make_tensor_descriptor(
-        v_ptr,
-        shape=[seqlen, headdim_v],
-        strides=[stride_v_seqlen, stride_v_vdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_V],
-    )
-    if HAS_Z:
-        z_desc = tl.make_tensor_descriptor(
-            z_ptr,
-            shape=[seqlen, headdim_v],
-            strides=[stride_z_seqlen, stride_z_vdim],
-            block_shape=[CHUNK_SIZE, HEADDIM_V],
-        )
-    
-    q_store_desc = tl.make_tensor_descriptor(
-        q_store_ptr,
-        shape=[seqlen, headdim_qk],
-        strides=[stride_q_store_seqlen, stride_q_store_qkdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_QK],
-    )
-    k_store_desc = tl.make_tensor_descriptor(
-        k_store_ptr,
-        shape=[seqlen, headdim_qk],
-        strides=[stride_k_store_seqlen, stride_k_store_qkdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_QK],
-    )
-    o_desc = tl.make_tensor_descriptor(
-        o_ptr,
-        shape=[seqlen, headdim_v],
-        strides=[stride_o_seqlen, stride_o_vdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_V],
-    )
-    if STORE_SSM_STATES_ADT_OUTV:
-        ssm_states_desc = tl.make_tensor_descriptor(
-            ssm_states_ptr,
-            shape=[headdim_v, num_chunks * headdim_qk],
-            strides=[stride_ssm_states_vdim, stride_ssm_states_qkdim],
-            block_shape=[HEADDIM_V, HEADDIM_QK],
-        )
+    final_ssm_state_ptr = Final_SSM_State + seq_idx * stride_final_ssm_state_seq + pid_head * stride_final_ssm_state_head
+    final_k_state_ptr = Final_K_State + seq_idx * stride_final_k_state_seq + pid_head * stride_final_k_state_head
 
     # Phase 1: Preprocessing - Apply bias, rotary embeddings, compute QK dots.
     for chunk_idx in range(num_chunks):
@@ -259,9 +205,17 @@ def mamba3_siso_fwd_kernel(
         offs_hd = tl.arange(0, HEADDIM_QK)
         offs_hdr = tl.arange(0, HEADDIM_QK // 2)
 
-        # Load Q and K blocks via TMA
-        q_pre_block = q_desc.load([chunk_start, 0])
-        k_pre_block = k_desc.load([chunk_start, 0])
+        # Load Q and K blocks directly (Triton 3.0 compatible path).
+        q_pre_block = tl.load(
+            q_ptr + offs_seqlen[:, None] * stride_q_seqlen + offs_hd[None, :] * stride_q_qkdim,
+            mask=(offs_seqlen[:, None] < seqlen) & (offs_hd[None, :] < headdim_qk),
+            other=0.0,
+        )
+        k_pre_block = tl.load(
+            k_ptr + offs_seqlen[:, None] * stride_k_seqlen + offs_hd[None, :] * stride_k_qkdim,
+            mask=(offs_seqlen[:, None] < seqlen) & (offs_hd[None, :] < headdim_qk),
+            other=0.0,
+        )
         
         # Load rotary angles
         angle_block = tl.load(
@@ -295,12 +249,9 @@ def mamba3_siso_fwd_kernel(
         k_bias_block = tl.load(k_bias_ptr + offs_hd * stride_k_bias_qkdim, offs_hd < headdim_qk)
         k_pre_block += k_bias_block[None, :]
 
-        # Compute QK dot products for skip connection
-        store_qk_dot = tl.dot(
-            q_pre_block * k_pre_block,
-            tl.full([HEADDIM_QK, 1], 1, dtype=q_pre_block.dtype)
-        ).to(q_pre_block.dtype)
-        store_qk_dot = store_qk_dot.reshape(CHUNK_SIZE)
+        # Compute QK dot products for skip connection.
+        # Triton 3.0 does not support dot reductions to a width-1 matrix.
+        store_qk_dot = tl.sum(q_pre_block * k_pre_block, axis=1).to(q_pre_block.dtype)
         store_qk_dot *= gamma
         tl.store(qk_store_ptr + offs_seqlen * stride_qk_store_seqlen, store_qk_dot, mask=offs_seqlen < seqlen)
         
@@ -314,21 +265,30 @@ def mamba3_siso_fwd_kernel(
         ko1 = k0 * sin_block + k1 * cos_block
         k_pre_block = tl.reshape(tl.join(ko0, ko1), [CHUNK_SIZE, HEADDIM_QK]).to(k_pre_block.dtype)
 
-        if chunk_idx == num_chunks - 1 and RETURN_FINAL_STATES:
-            tl.store(final_k_state_ptr + tl.arange(0, CHUNK_SIZE)[:, None] * stride_final_k_state_chunk 
-                + offs_hd[None, :] * stride_final_k_state_qkdim, 
-                k_pre_block,
-                mask=(offs_hd[None, :] < headdim_qk))
+        if RETURN_FINAL_STATES:
+            if chunk_idx == num_chunks - 1:
+                tl.store(final_k_state_ptr + tl.arange(0, CHUNK_SIZE)[:, None] * stride_final_k_state_chunk 
+                    + offs_hd[None, :] * stride_final_k_state_qkdim, 
+                    k_pre_block,
+                    mask=(offs_hd[None, :] < headdim_qk))
             
         k_pre_block *= scale[:, None]
-        k_store_desc.store([chunk_start, 0], k_pre_block)
+        tl.store(
+            k_store_ptr + offs_seqlen[:, None] * stride_k_store_seqlen + offs_hd[None, :] * stride_k_store_qkdim,
+            k_pre_block,
+            mask=(offs_seqlen[:, None] < seqlen) & (offs_hd[None, :] < headdim_qk),
+        )
 
         # Apply rotary embeddings to Q
         q0, q1 = tl.split(tl.reshape(q_pre_block, [CHUNK_SIZE, HEADDIM_QK // 2, 2]))
         qo0 = q0 * cos_block - q1 * sin_block
         qo1 = q0 * sin_block + q1 * cos_block
         q_pre_block = tl.reshape(tl.join(qo0, qo1), [CHUNK_SIZE, HEADDIM_QK]).to(q_pre_block.dtype)
-        q_store_desc.store([chunk_start, 0], q_pre_block)
+        tl.store(
+            q_store_ptr + offs_seqlen[:, None] * stride_q_store_seqlen + offs_hd[None, :] * stride_q_store_qkdim,
+            q_pre_block,
+            mask=(offs_seqlen[:, None] < seqlen) & (offs_hd[None, :] < headdim_qk),
+        )
 
     # Phase 2: Main computation and output generation.
     if HAS_INITIAL_STATES:
@@ -360,17 +320,35 @@ def mamba3_siso_fwd_kernel(
     for chunk_idx in range(num_chunks):
         chunk_start = chunk_idx * CHUNK_SIZE
         offs_seqlen = chunk_start + tl.arange(0, CHUNK_SIZE)
+        offs_hd_qk = tl.arange(0, HEADDIM_QK)
+        offs_hd_v = tl.arange(0, HEADDIM_V)
 
         # Load decay factors (log2 scale for exp2 computation)
         adt_ptrs = adt_ptr + offs_seqlen * stride_adt_seqlen
         da = tl.load(adt_ptrs, mask=offs_seqlen < seqlen, other=0.0) * 1.44269504089  # log2(e)
 
-        # Load preprocessed Q, K, V blocks
-        q_block = q_store_desc.load([chunk_start, 0])
-        k_block = k_store_desc.load([chunk_start, 0])
-        v_block = v_desc.load([chunk_start, 0])
+        # Load preprocessed Q, K, V blocks.
+        q_block = tl.load(
+            q_store_ptr + offs_seqlen[:, None] * stride_q_store_seqlen + offs_hd_qk[None, :] * stride_q_store_qkdim,
+            mask=(offs_seqlen[:, None] < seqlen) & (offs_hd_qk[None, :] < headdim_qk),
+            other=0.0,
+        )
+        k_block = tl.load(
+            k_store_ptr + offs_seqlen[:, None] * stride_k_store_seqlen + offs_hd_qk[None, :] * stride_k_store_qkdim,
+            mask=(offs_seqlen[:, None] < seqlen) & (offs_hd_qk[None, :] < headdim_qk),
+            other=0.0,
+        )
+        v_block = tl.load(
+            v_ptr + offs_seqlen[:, None] * stride_v_seqlen + offs_hd_v[None, :] * stride_v_vdim,
+            mask=(offs_seqlen[:, None] < seqlen) & (offs_hd_v[None, :] < headdim_v),
+            other=0.0,
+        )
         if HAS_Z:
-            z_block = z_desc.load([chunk_start, 0])
+            z_block = tl.load(
+                z_ptr + offs_seqlen[:, None] * stride_z_seqlen + offs_hd_v[None, :] * stride_z_vdim,
+                mask=(offs_seqlen[:, None] < seqlen) & (offs_hd_v[None, :] < headdim_v),
+                other=0.0,
+            )
 
         # Compute cumulative decay for this chunk
         da_cs = tl.cumsum(da)
@@ -411,10 +389,20 @@ def mamba3_siso_fwd_kernel(
             acc_o = acc_o * silu(z_block.to(tl.float32))
 
         # Store output
-        o_desc.store([chunk_start, 0], acc_o)
+        tl.store(
+            o_ptr + offs_seqlen[:, None] * stride_o_seqlen + offs_hd_v[None, :] * stride_o_vdim,
+            acc_o,
+            mask=(offs_seqlen[:, None] < seqlen) & (offs_hd_v[None, :] < headdim_v),
+        )
 
         if STORE_SSM_STATES_ADT_OUTV:
-            ssm_states_desc.store([0, chunk_idx * headdim_qk], acc_ssm_states.to(ssm_states_desc.dtype))
+            tl.store(
+                ssm_states_ptr + offs_hd_v[:, None] * stride_ssm_states_vdim
+                + (chunk_idx * headdim_qk + offs_hd_qk[None, :]) * stride_ssm_states_qkdim,
+                acc_ssm_states.to(tl.bfloat16),
+                mask=(offs_hd_v[:, None] < headdim_v)
+                & ((chunk_idx * headdim_qk + offs_hd_qk[None, :]) < num_chunks * headdim_qk),
+            )
 
         # Update recurrent states
         scale = tl.math.exp2(da_cs_rev)
@@ -598,7 +586,10 @@ def mamba3_siso_fwd(
         Final_SSM_State = torch.empty((num_sequences, nheads, headdim_v, headdim_qk), device=device, dtype=torch.float32)
         Final_K_State = torch.empty((num_sequences, nheads, chunk_size, headdim_qk), device=device, dtype=torch.float32)
     else:
-        Final_SSM_State, Final_K_State = None, None
+        # Triton 3.0 still parses pointer arithmetic for all kernel args even when
+        # RETURN_FINAL_STATES=False. Provide dummy tensors instead of None.
+        Final_SSM_State = torch.empty((1, 1, 1, 1), device=device, dtype=torch.float32)
+        Final_K_State = torch.empty((1, 1, chunk_size, 1), device=device, dtype=torch.float32)
 
     HEADDIM_V = triton.next_power_of_2(headdim_v)
     HEADDIM_QK = triton.next_power_of_2(headdim_qk)

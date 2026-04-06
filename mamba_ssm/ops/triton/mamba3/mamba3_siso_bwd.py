@@ -333,62 +333,14 @@ def mamba3_siso_bwd_kernel_dqkv(
 
     num_chunks = tl.cdiv(seqlen, CHUNK_SIZE)
 
-    #  TMA Descriptors for Efficient Memory Access 
-    q_desc = tl.make_tensor_descriptor(
-        Q + q_offset,
-        shape=[seqlen, headdim_qk],
-        strides=[stride_q_seqlen, stride_q_qkdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_QK],
-    )
-    k_desc = tl.make_tensor_descriptor(
-        K + k_offset,
-        shape=[seqlen, headdim_qk],
-        strides=[stride_k_seqlen, stride_k_qkdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_QK],
-    )
-    v_desc = tl.make_tensor_descriptor(
-        V + v_offset,
-        shape=[seqlen, headdim_v],
-        strides=[stride_v_seqlen, stride_v_vdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_V],
-    )
-    ssm_states_desc = tl.make_tensor_descriptor(
-        SSM_States + ssm_states_offset,
-        shape=[headdim_v, num_chunks * headdim_qk],
-        strides=[stride_ssm_states_vdim, stride_ssm_states_qkdim],
-        block_shape=[HEADDIM_V, HEADDIM_QK],
-    )
-    do_desc = tl.make_tensor_descriptor(
-        dO + do_offset,
-        shape=[seqlen, headdim_v],
-        strides=[stride_do_seqlen, stride_do_vdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_V],
-    )
-    dq_desc = tl.make_tensor_descriptor(
-        dQ + dq_offset,
-        shape=[seqlen, headdim_qk],
-        strides=[stride_dq_seqlen, stride_dq_qkdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_QK],
-    )
-    dk_desc = tl.make_tensor_descriptor(
-        dK + dk_offset,
-        shape=[seqlen, headdim_qk],
-        strides=[stride_dk_seqlen, stride_dk_qkdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_QK],
-    )
-    dv_desc = tl.make_tensor_descriptor(
-        dV + dv_offset,
-        shape=[seqlen, headdim_v],
-        strides=[stride_dv_seqlen, stride_dv_vdim],
-        block_shape=[CHUNK_SIZE, HEADDIM_V],
-    )
-
     for chunk_idx_loop in range(num_chunks):
         chunk_idx = num_chunks - 1 - chunk_idx_loop  # Reverse order for backward pass
         chunk_start = chunk_idx * CHUNK_SIZE
 
         # Sequence-length mask for non-TMA loads/stores
         offs_cs = chunk_start + tl.arange(0, CHUNK_SIZE)
+        offs_qk = tl.arange(0, HEADDIM_QK)
+        offs_v = tl.arange(0, HEADDIM_V)
         seq_mask = offs_cs < seqlen
 
         # ============================================================
@@ -402,13 +354,35 @@ def mamba3_siso_bwd_kernel_dqkv(
         da_cs_chunk_sum = tl.load(da_cs_sum_ptrs)  # Total decay for this chunk: scalar
 
         # ============================================================
-        # Load Q, K, V, dO, SSM_States via TMA
+        # Load Q, K, V, dO, SSM_States (Triton 3.0 compatible path)
         # ============================================================
-        do_block = do_desc.load([chunk_start, 0])  # (CHUNK_SIZE, HEADDIM_V)
-        v_block = v_desc.load([chunk_start, 0])    # (CHUNK_SIZE, HEADDIM_V)
-        q_block = q_desc.load([chunk_start, 0])    # (CHUNK_SIZE, HEADDIM_QK)
-        k_block = k_desc.load([chunk_start, 0])    # (CHUNK_SIZE, HEADDIM_QK)
-        ssm_states_block = ssm_states_desc.load([0, chunk_idx * headdim_qk])  # (HEADDIM_V, HEADDIM_QK)
+        do_block = tl.load(
+            dO + do_offset + offs_cs[:, None] * stride_do_seqlen + offs_v[None, :] * stride_do_vdim,
+            mask=seq_mask[:, None] & (offs_v[None, :] < headdim_v),
+            other=0.0,
+        )
+        v_block = tl.load(
+            V + v_offset + offs_cs[:, None] * stride_v_seqlen + offs_v[None, :] * stride_v_vdim,
+            mask=seq_mask[:, None] & (offs_v[None, :] < headdim_v),
+            other=0.0,
+        )
+        q_block = tl.load(
+            Q + q_offset + offs_cs[:, None] * stride_q_seqlen + offs_qk[None, :] * stride_q_qkdim,
+            mask=seq_mask[:, None] & (offs_qk[None, :] < headdim_qk),
+            other=0.0,
+        )
+        k_block = tl.load(
+            K + k_offset + offs_cs[:, None] * stride_k_seqlen + offs_qk[None, :] * stride_k_qkdim,
+            mask=seq_mask[:, None] & (offs_qk[None, :] < headdim_qk),
+            other=0.0,
+        )
+        ssm_states_block = tl.load(
+            SSM_States + ssm_states_offset + offs_v[:, None] * stride_ssm_states_vdim
+            + (chunk_idx * headdim_qk + offs_qk[None, :]) * stride_ssm_states_qkdim,
+            mask=(offs_v[:, None] < headdim_v)
+            & ((chunk_idx * headdim_qk + offs_qk[None, :]) < num_chunks * headdim_qk),
+            other=0.0,
+        )
 
         # ============================================================
         # Compute Decay Scaling Factors
@@ -465,7 +439,11 @@ def mamba3_siso_bwd_kernel_dqkv(
         # Inter-chunk: gradient flowing through accumulated states
         acc_dk += tl.dot(v_block, d_ssm_states_acc.to(v_block.dtype)) * exp_da_cs_rev[:, None]
 
-        dk_desc.store([chunk_start, 0], acc_dk)
+        tl.store(
+            dK + dk_offset + offs_cs[:, None] * stride_dk_seqlen + offs_qk[None, :] * stride_dk_qkdim,
+            acc_dk,
+            mask=seq_mask[:, None] & (offs_qk[None, :] < headdim_qk),
+        )
 
         # ============================================================
         # Compute dQ: Query Gradient
@@ -488,7 +466,11 @@ def mamba3_siso_bwd_kernel_dqkv(
         # Inter-chunk: gradient through states from previous chunks
         acc_dq += tl.dot(do_block, ssm_states_block) * exp_da_cs[:, None]
 
-        dq_desc.store([chunk_start, 0], acc_dq)
+        tl.store(
+            dQ + dq_offset + offs_cs[:, None] * stride_dq_seqlen + offs_qk[None, :] * stride_dq_qkdim,
+            acc_dq,
+            mask=seq_mask[:, None] & (offs_qk[None, :] < headdim_qk),
+        )
 
         # ============================================================
         # Compute dV: Value Gradient
@@ -527,7 +509,11 @@ def mamba3_siso_bwd_kernel_dqkv(
         else:
             acc_dv += dO_reloaded * qk_dot[:, None]
 
-        dv_desc.store([chunk_start, 0], acc_dv)
+        tl.store(
+            dV + dv_offset + offs_cs[:, None] * stride_dv_seqlen + offs_v[None, :] * stride_dv_vdim,
+            acc_dv,
+            mask=seq_mask[:, None] & (offs_v[None, :] < headdim_v),
+        )
 
         # ============================================================
         # Compute dQK_Dot and dD: Skip Connection Gradients
@@ -540,24 +526,19 @@ def mamba3_siso_bwd_kernel_dqkv(
             volatile=True
         )
 
-        # dQK_dot = sum_v(dO * V) for each position
-        dQK_dot_block = tl.dot(
-            dO_reloaded * v_block_reloaded,
-            tl.full([HEADDIM_V, 1], 1, dtype=dO_reloaded.dtype)
-        )
+        # dQK_dot = sum_v(dO * V) for each position.
+        # Triton 3.0 does not support dot reductions to width-1 outputs.
+        dQK_dot_block = tl.sum(dO_reloaded * v_block_reloaded, axis=1)
 
         tl.store(
             dQK_Dot + dQK_dot_offset + offs_cs * stride_dQK_dot_seqlen,
-            dQK_dot_block.reshape(CHUNK_SIZE),
+            dQK_dot_block,
             mask=seq_mask
         )
 
         # Accumulate dD gradient
         if D is not None:
-            dD_acc += tl.dot(
-                tl.full([1, CHUNK_SIZE], 1, dtype=tl.float32),
-                dQK_dot_block
-            ).reshape(1)
+            dD_acc += tl.sum(dQK_dot_block, axis=0)
 
         # ============================================================
         # Compute dADT Gradient (Part 2): From Inter-chunk States
@@ -1412,7 +1393,7 @@ def apply_dk_state_post(
         for s in [1, 2, 3]
         for w in [2, 4, 8]
     ],
-    key=["HEADDIM_V", "HEADDIM_QK", "HAS_INPUT_STATE", "IS_VARLEN"]
+    key=["seqlen"]
 )
 @triton.jit
 def mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states(

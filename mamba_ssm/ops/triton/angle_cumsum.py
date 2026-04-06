@@ -7,7 +7,6 @@ import torch
 
 import triton
 import triton.language as tl
-from triton.language.extra import libdevice
 
 class AngleDtFn(torch.autograd.Function):
     @staticmethod
@@ -144,7 +143,7 @@ def angle_dt_fwd_kernel(
     # dt_vals: (BLOCK_S,)
     #output_vals = angle_vals * dt_vals[:, None]  # (BLOCK_S, BLOCK_D)
     output_vals = tl.sigmoid(2.0 * angle_vals) * 2.0 - 1.0
-    # output_vals = libdevice.tanh(output_vals)  # This is pretty slow
+    # output_vals = tl.math.tanh(output_vals)  # This is pretty slow
     # This is still not super fast, idk how to enable fastmath
     #output_vals = tl.sigmoid(2.0 * output_vals) * 2.0 - 1.0
     output_vals = output_vals * dt_vals[:, None]

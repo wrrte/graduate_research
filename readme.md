@@ -30,7 +30,7 @@ If you find Drama useful, please reference in your paper:
 ```
 pip install --upgrade pip setuptools wheel
 pip install packaging ninja
-pip install flash_attn==2.8.3 --no-build-isolation
+FLASH_ATTN_FORCE_BUILD=TRUE pip install --no-build-isolation --no-binary=flash-attn flash-attn==2.4.2
 pip install -r requirements.txt
 ```
 
@@ -38,9 +38,11 @@ pip install -r requirements.txt
 
 ### Recommended module versions (24.05 baseline)
 
-- `flash-attn==2.8.3`
+- `flash-attn==2.4.2` (source build recommended on `24.05-py3`)
 - `mamba-ssm==1.2.0.post1`
+- `transformers==4.41.2`
 - `causal-conv1d==1.6.1`
+- `opencv-python-headless==4.7.0.72`
 - `triton`: use the version bundled with the container/PyTorch (do not pin separately)
 
 ### Training Instructions
