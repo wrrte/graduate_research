@@ -118,8 +118,9 @@ def joint_train_world_model_agent(config, logdir,
 
     # sample and train
     for total_steps in tqdm(range(config.JointTrainAgent.SampleMaxSteps // config.JointTrainAgent.NumEnvs), desc='Training'):
+        wm_ready = replay_buffer.ready('world_model')
         # sample part >>>
-        if replay_buffer.ready('world_model'):
+        if wm_ready:
             world_model.eval()
             agent.eval()
             with torch.no_grad():
@@ -154,7 +155,7 @@ def joint_train_world_model_agent(config, logdir,
         ob, reward, is_last, info = env.step(action)
         replay_buffer.append(current_ob, action, reward, info['is_terminal'])
 
-        if replay_buffer.ready('world_model'):
+        if wm_ready:
             context_reward.append(reward)
 
         sum_reward += reward
