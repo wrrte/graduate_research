@@ -13,13 +13,11 @@ from einops import rearrange, repeat
 from torch import Tensor
 from torch.profiler import ProfilerActivity, profile, record_function
 
+# 둘 모두에서 못 찾으면 문제가 있는 것이니 자동으로 에러가 뜨는 것이 맞는듯.
 try:
     from transformers.generation import GenerateDecoderOnlyOutput
 except ImportError:
-    try:
-        from transformers.generation.utils import GenerateDecoderOnlyOutput
-    except ImportError:
-        GenerateDecoderOnlyOutput = namedtuple("GenerateDecoderOnlyOutput", ["sequences", "scores"])
+    from transformers.generation.utils import GenerateDecoderOnlyOutput
 
 @dataclass
 class InferenceParams:
