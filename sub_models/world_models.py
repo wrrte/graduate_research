@@ -592,8 +592,15 @@ class WorldModel(nn.Module):
         # fall back to full-sequence forward passes without inference cache.
         use_incremental_decode = not (self.model == 'Mamba3' and not self.mamba3_step_available)
         use_cg_decode = self.use_cg and use_incremental_decode
+        incremental_decode_disabled_reason = None
+        if self.model == 'Mamba3' and not self.mamba3_step_available:
+            incremental_decode_disabled_reason = "Mamba3 step kernel is unavailable (mamba3_step_fn is None)"
         if not use_incremental_decode and not self._warned_missing_mamba3_step:
-            print("[WorldModel] Mamba3 decode kernel is unavailable; using full-sequence fallback (slower).")
+            reason = incremental_decode_disabled_reason or "unknown runtime condition"
+            print(
+                f"[WorldModel][Warning] Incremental decode is disabled: {reason}. "
+                "Using full-sequence fallback (slower)."
+            )
             self._warned_missing_mamba3_step = True
         
         # ------------------------------------------------------------------
