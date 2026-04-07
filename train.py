@@ -194,7 +194,7 @@ def joint_train_world_model_agent(config, logdir,
         if replay_buffer.ready('behaviour') and total_steps % (config.JointTrainAgent.TrainAgentEverySteps // config.JointTrainAgent.NumEnvs) == 0 and total_steps <= config.JointTrainAgent.FreezeBehaviourAfterSteps:
             log_video = total_steps % (config.JointTrainAgent.SaveEverySteps // config.JointTrainAgent.NumEnvs) == 0
 
-            imagine_latent, agent_action, old_logits, context_latent, context_reward, context_termination, imagine_reward, imagine_termination = world_model_imagine_data(
+            imagine_latent, agent_action, old_logits, context_latent, imagined_context_reward, imagined_context_termination, imagine_reward, imagine_termination = world_model_imagine_data(
                 replay_buffer=replay_buffer,
                 world_model=world_model,
                 agent=agent,
@@ -211,8 +211,8 @@ def joint_train_world_model_agent(config, logdir,
                 action=agent_action,
                 old_logits=old_logits,
                 context_latent=context_latent,
-                context_reward=context_reward,
-                context_termination=context_termination,
+                context_reward=imagined_context_reward,
+                context_termination=imagined_context_termination,
                 reward=imagine_reward,
                 termination=imagine_termination,
                 logger=logger,
