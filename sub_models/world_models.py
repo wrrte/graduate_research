@@ -16,6 +16,7 @@ from sub_models.functions_losses import SymLogTwoHotLoss
 from sub_models.attention_blocks import get_subsequent_mask_with_batch_length, get_subsequent_mask
 from sub_models.transformer_model import StochasticTransformerKVCache
 from mamba_ssm import MambaWrapperModel, MambaConfig, InferenceParams, update_graph_cache
+from mamba_ssm.modules import mamba3 as mamba3_module
 import agents
 from line_profiler import profile
 from torch.distributions.independent import Independent
@@ -256,6 +257,10 @@ class WorldModel(nn.Module):
         self.device = device # Maybe it's not needed
         self.model = config.Models.WorldModel.Backbone
         self.r_dim = 255
+        self.mamba3_step_available = True
+        self._warned_missing_mamba3_step = False
+        if self.model == 'Mamba3':
+            self.mamba3_step_available = getattr(mamba3_module, "mamba3_step_fn", None) is not None
         self.max_grad_norm = config.Models.WorldModel.Max_grad_norm  
         max_seq_length = max(config.JointTrainAgent.BatchLength, 
                              config.JointTrainAgent.ImagineContextLength + config.JointTrainAgent.ImagineBatchLength, 
@@ -582,6 +587,14 @@ class WorldModel(nn.Module):
         context_latent = self.encode_obs(sample_obs)
         batch_size, seqlen_og, embedding_dim = context_latent.shape
         max_length = imagine_batch_length + seqlen_og
+
+        # Mamba3 decode step relies on optional Cute kernels. If unavailable,
+        # fall back to full-sequence forward passes without inference cache.
+        use_incremental_decode = not (self.model == 'Mamba3' and not self.mamba3_step_available)
+        use_cg_decode = self.use_cg and use_incremental_decode
+        if not use_incremental_decode and not self._warned_missing_mamba3_step:
+            print("[WorldModel] Mamba3 decode kernel is unavailable; using full-sequence fallback (slower).")
+            self._warned_missing_mamba3_step = True
         
         # ------------------------------------------------------------------
         # [수정 1] Mamba에 실제로 들어갈 단일 텐서의 차원 계산 (latent + action + r)
@@ -589,7 +602,7 @@ class WorldModel(nn.Module):
         action_dim = self.sequence_model.config.action_dim
         mamba_input_dim = self.stoch_flattened_dim + action_dim + 255 
 
-        if self.use_cg:
+        if use_cg_decode:
             if not hasattr(self.sequence_model, "_decoding_cache"):
                 self.sequence_model._decoding_cache = None
             self.sequence_model._decoding_cache = update_graph_cache(
@@ -602,15 +615,19 @@ class WorldModel(nn.Module):
             )
             inference_params = self.sequence_model._decoding_cache.inference_params
             inference_params.reset(max_length, imagine_batch_size)
-        else:
+        elif use_incremental_decode:
             inference_params = InferenceParams(max_seqlen=max_length, max_batch_size=imagine_batch_size, key_value_dtype=torch.bfloat16 if self.use_amp else None)
+        else:
+            inference_params = None
 
         # ------------------------------------------------------------------
         # [수정 3] get_hidden_state가 단일 텐서(mamba_input)만 받도록 서명 수정
         # ------------------------------------------------------------------
         def get_hidden_state(mamba_input, inference_params):
+            if inference_params is None:
+                return self.sequence_model(mamba_input)
             decoding = inference_params.seqlen_offset > 0
-            if not self.use_cg or not decoding:
+            if not use_cg_decode or not decoding:
                 hidden_state = self.sequence_model(
                     mamba_input, 
                     inference_params=inference_params
@@ -621,14 +638,16 @@ class WorldModel(nn.Module):
                 )
             return hidden_state        
 
-        def should_stop(current_token, inference_params):
+        def should_stop(step_idx, inference_params):
+            if inference_params is None:
+                return step_idx >= imagine_batch_length
             if inference_params.seqlen_offset == 0:
                 return False
             if inference_params.seqlen_offset >= max_length:
                 return True
             return False
 
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp and not self.use_cg):
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp and not use_cg_decode):
             # 1. 실제 보상을 255차원 Two-hot으로 변환
             r_twohot = self.symlog_twohot_loss_func.encode(sample_reward).to(self.tensor_dtype)
             
@@ -642,10 +661,13 @@ class WorldModel(nn.Module):
             context_mamba_input = self._prepare_mamba_input(context_latent, sample_action, context_r)
             context_dist_feat = get_hidden_state(context_mamba_input, inference_params)
             
-            inference_params.seqlen_offset += context_dist_feat.shape[1]
+            if inference_params is not None:
+                inference_params.seqlen_offset += context_dist_feat.shape[1]
             context_prior_logits = self.dist_head.forward_prior(context_dist_feat)
             context_prior_sample = self.stright_throught_gradient(context_prior_logits)
             context_flattened_sample = self.flatten_sample(context_prior_sample)
+
+            running_mamba_input = context_mamba_input if inference_params is None else None
 
             dist_feat_list, sample_list  = [context_dist_feat[:, -1:]], [context_flattened_sample[:, -1:]]
             self.sample_buffer[:, 0:1] = context_flattened_sample[:, -1:]
@@ -659,7 +681,7 @@ class WorldModel(nn.Module):
             last_r_encoded = F.softmax(context_last_reward_logits, dim=-1).to(self.tensor_dtype)
 
             # 자가회귀(Autoregressive) 상상 루프
-            while not should_stop(sample_list[-1], inference_params):
+            while not should_stop(i, inference_params):
                 action, logits = agent.sample(torch.cat([self.sample_buffer[:, i:i+1], self.dist_feat_buffer[:, i:i+1]], dim=-1))
                 action_list.append(action)
                 self.action_buffer[:, i:i+1] = action
@@ -669,11 +691,16 @@ class WorldModel(nn.Module):
                 # [수정 5] Imagine 스텝 루프 내에서도 단일 mamba_input 생성 후 전달
                 # ------------------------------------------------------------------
                 step_mamba_input = self._prepare_mamba_input(sample_list[-1], action_list[-1], last_r_encoded)
-                dist_feat = get_hidden_state(step_mamba_input, inference_params)
+                if inference_params is None:
+                    running_mamba_input = torch.cat([running_mamba_input, step_mamba_input], dim=1)
+                    dist_feat = get_hidden_state(running_mamba_input, inference_params)[:, -1:]
+                else:
+                    dist_feat = get_hidden_state(step_mamba_input, inference_params)
                 
                 dist_feat_list.append(dist_feat)
                 self.dist_feat_buffer[:, i+1:i+2] = dist_feat
-                inference_params.seqlen_offset += sample_list[-1].shape[1]
+                if inference_params is not None:
+                    inference_params.seqlen_offset += sample_list[-1].shape[1]
 
                 current_reward_logits = self.reward_decoder(dist_feat)
                 last_r_encoded = F.softmax(current_reward_logits, dim=-1).to(self.tensor_dtype)
