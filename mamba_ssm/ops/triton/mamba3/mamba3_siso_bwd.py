@@ -26,7 +26,7 @@ from mamba_ssm.ops.triton.mamba3.utils import cos_approx, sin_approx, sigmoid_ap
         for s in [1, 2, 3]
         for w in [2, 4, 8]
     ],
-    key=["HEADDIM_V"]
+    key=["headdim_v"]
 )
 @triton.jit
 def mamba3_siso_bwd_kernel_dzdo(
