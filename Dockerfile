@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsm6 \
     libxext6 \
+    tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # Keep build tooling available for CUDA extension wheels.
