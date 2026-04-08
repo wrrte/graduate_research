@@ -34,10 +34,10 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
     epoch_representation_real_kl_div_list = []
     epoch_total_loss_list = []
     for e in range(epoch):
-        obs, action, reward, termination = replay_buffer.sample(batch_size, batch_length, imagine=False)
+        obs, action, reward, termination, is_first = replay_buffer.sample(batch_size, batch_length, imagine=False)
         reconstruction_loss, reward_loss, termination_loss, \
         dynamics_loss, dynamics_real_kl_div, representation_loss, \
-        representation_real_kl_div, total_loss = world_model.update(obs, action, reward, termination, global_step=global_step, epoch_step=e, logger=logger)
+        representation_real_kl_div, total_loss = world_model.update(obs, action, reward, termination, is_first, global_step=global_step, epoch_step=e, logger=logger)
 
         epoch_reconstruction_loss_list.append(reconstruction_loss)
         epoch_reward_loss_list.append(reward_loss)
@@ -70,11 +70,11 @@ def world_model_imagine_data(replay_buffer: ReplayBuffer,
     '''
     world_model.eval()
     agent.eval()
-    sample_obs, sample_action, sample_reward, sample_termination = replay_buffer.sample(
+    sample_obs, sample_action, sample_reward, sample_termination, sample_is_first = replay_buffer.sample(
         imagine_batch_size, imagine_context_length, imagine=True)
     if world_model.model == 'Transformer':
         latent, action, old_logits, context_latent, reward_hat, termination_hat = world_model.imagine_data(
-            agent, sample_obs, sample_action,
+            agent, sample_obs, sample_action, sample_is_first,
             imagine_batch_size=imagine_batch_size,
             imagine_batch_length=imagine_batch_length,
             log_video=log_video,
@@ -82,7 +82,7 @@ def world_model_imagine_data(replay_buffer: ReplayBuffer,
         )
     elif world_model.model in ['Mamba', 'Mamba2', 'Mamba3']:
          latent, action, old_logits, context_latent, reward_hat, termination_hat = world_model.imagine_data2(
-            agent, sample_obs, sample_action, sample_reward,
+            agent, sample_obs, sample_action, sample_reward, sample_is_first,
             imagine_batch_size=imagine_batch_size,
             imagine_batch_length=imagine_batch_length,
             log_video=log_video,
@@ -112,6 +112,7 @@ def joint_train_world_model_agent(config, logdir,
     
     sum_reward = 0
     current_ob, info = env.reset()
+    current_is_first = float(info.get("is_first", True))
     context_obs = deque(maxlen=config.JointTrainAgent.RealityContextLength)
     context_action = deque(maxlen=config.JointTrainAgent.RealityContextLength)
     context_reward = deque(maxlen=config.JointTrainAgent.RealityContextLength)
@@ -153,13 +154,14 @@ def joint_train_world_model_agent(config, logdir,
             action = env.action_space.sample()
 
         ob, reward, is_last, info = env.step(action)
-        replay_buffer.append(current_ob, action, reward, info['is_terminal'])
+        replay_buffer.append(current_ob, action, reward, info['is_terminal'], current_is_first)
 
         if wm_ready:
             context_reward.append(reward)
 
         sum_reward += reward
         current_ob = ob
+        current_is_first = 0.0
 
         if is_last:
             logger.log(f"episode/score", sum_reward, global_step=total_steps)
@@ -173,7 +175,8 @@ def joint_train_world_model_agent(config, logdir,
                         logger.log(f"benchmark/normalised {algorithm} score", normalized_score, global_step=total_steps)
             
             sum_reward = 0
-            ob, info = env.reset()
+            current_ob, reset_info = env.reset()
+            current_is_first = float(reset_info.get("is_first", True))
             context_obs.clear()
             context_action.clear()
             context_reward.clear()

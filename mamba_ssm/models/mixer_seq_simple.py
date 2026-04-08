@@ -254,7 +254,7 @@ class MixerModel(nn.Module):
             for i, layer in enumerate(self.layers)
         }
 
-    def forward(self, mamba_input, inference_params=None, **mixer_kwargs):
+    def _forward_no_reset(self, mamba_input, inference_params=None, **mixer_kwargs):
         # action = F.one_hot(action.long(), self.action_dim).float()
         hidden_states = self.stem(mamba_input)
             
@@ -281,6 +281,124 @@ class MixerModel(nn.Module):
                 dropout_p=self.dropout_p if self.training else 0.0
             )
         return hidden_states
+
+    @staticmethod
+    def _format_is_first(is_first, batch_size, seq_len, device):
+        if is_first is None:
+            return None
+        if is_first.dim() == 3 and is_first.shape[-1] == 1:
+            is_first = is_first.squeeze(-1)
+        if is_first.dim() == 1:
+            is_first = is_first.unsqueeze(1)
+        if is_first.shape[0] != batch_size:
+            raise ValueError(f"Expected is_first batch={batch_size}, got {is_first.shape[0]}")
+        if is_first.shape[1] == 1 and seq_len > 1:
+            is_first = is_first.expand(batch_size, seq_len)
+        if is_first.shape[1] != seq_len:
+            raise ValueError(f"Expected is_first length={seq_len}, got {is_first.shape[1]}")
+        return (is_first.to(device=device) > 0.5)
+
+    @staticmethod
+    def _reset_cache_rows(inference_params, reset_mask):
+        if inference_params is None or not bool(torch.any(reset_mask)):
+            return
+
+        for cache_entry in inference_params.key_value_memory_dict.values():
+            if isinstance(cache_entry, torch.Tensor):
+                state_tensors = (cache_entry,)
+            elif isinstance(cache_entry, (tuple, list)):
+                state_tensors = cache_entry
+            elif isinstance(cache_entry, dict):
+                state_tensors = cache_entry.values()
+            else:
+                continue
+
+            for state in state_tensors:
+                if not isinstance(state, torch.Tensor):
+                    continue
+                if state.shape[0] != reset_mask.shape[0]:
+                    continue
+
+                view_shape = (-1, *([1] * (state.dim() - 1)))
+                if state.dtype == torch.bool:
+                    keep = (~reset_mask).to(device=state.device).view(view_shape)
+                    state &= keep
+                else:
+                    keep = (~reset_mask).to(device=state.device, dtype=state.dtype).view(view_shape)
+                    state.mul_(keep)
+
+        if (
+            inference_params.lengths_per_sample is not None
+            and inference_params.lengths_per_sample.shape[0] == reset_mask.shape[0]
+        ):
+            inference_params.lengths_per_sample[reset_mask] = 0
+
+    def _forward_segmented(self, mamba_input, is_first_mask, **mixer_kwargs):
+        batch_size, seq_len = mamba_input.shape[:2]
+        outputs = []
+
+        for batch_idx in range(batch_size):
+            reset_starts = torch.nonzero(is_first_mask[batch_idx], as_tuple=False).squeeze(-1).tolist()
+            starts = [0] + [idx for idx in reset_starts if idx != 0]
+            starts = sorted(set(starts))
+
+            segment_outputs = []
+            for i, start in enumerate(starts):
+                end = starts[i + 1] if i + 1 < len(starts) else seq_len
+                segment_outputs.append(
+                    self._forward_no_reset(
+                        mamba_input[batch_idx:batch_idx + 1, start:end],
+                        inference_params=None,
+                        **mixer_kwargs,
+                    )
+                )
+
+            outputs.append(torch.cat(segment_outputs, dim=1))
+
+        return torch.cat(outputs, dim=0)
+
+    def _forward_with_inference_reset(self, mamba_input, inference_params, is_first_mask, **mixer_kwargs):
+        seq_len = mamba_input.shape[1]
+        start_offset = inference_params.seqlen_offset
+        outputs = []
+
+        for t in range(seq_len):
+            reset_mask = is_first_mask[:, t]
+            if bool(torch.any(reset_mask)):
+                self._reset_cache_rows(inference_params, reset_mask)
+
+            outputs.append(
+                self._forward_no_reset(
+                    mamba_input[:, t:t + 1],
+                    inference_params=inference_params,
+                    **mixer_kwargs,
+                )
+            )
+            inference_params.seqlen_offset += 1
+
+        inference_params.seqlen_offset = start_offset
+        return torch.cat(outputs, dim=1)
+
+    def forward(self, mamba_input, inference_params=None, is_first=None, **mixer_kwargs):
+        is_first_mask = self._format_is_first(
+            is_first,
+            batch_size=mamba_input.shape[0],
+            seq_len=mamba_input.shape[1],
+            device=mamba_input.device,
+        )
+
+        if is_first_mask is None or not bool(torch.any(is_first_mask)):
+            return self._forward_no_reset(mamba_input, inference_params=inference_params, **mixer_kwargs)
+
+        if inference_params is None:
+            return self._forward_segmented(mamba_input, is_first_mask, **mixer_kwargs)
+
+        return self._forward_with_inference_reset(
+            mamba_input,
+            inference_params=inference_params,
+            is_first_mask=is_first_mask,
+            **mixer_kwargs,
+        )
 
 
 class MambaWrapperModel(nn.Module, GenerationMixin):
@@ -342,11 +460,16 @@ class MambaWrapperModel(nn.Module, GenerationMixin):
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
         return self.backbone.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
 
-    def forward(self, mamba_input, inference_params=None, num_last_tokens=0, **mixer_kwargs):
+    def forward(self, mamba_input, inference_params=None, num_last_tokens=0, is_first=None, **mixer_kwargs):
         """
         num_last_tokens: if > 0, only return the logits for the last n tokens
         """
-        hidden_states = self.backbone(mamba_input, inference_params=inference_params, **mixer_kwargs)
+        hidden_states = self.backbone(
+            mamba_input,
+            inference_params=inference_params,
+            is_first=is_first,
+            **mixer_kwargs,
+        )
         if num_last_tokens > 0:
             hidden_states = hidden_states[:, -num_last_tokens:]
         # lm_logits = self.lm_head(hidden_states)

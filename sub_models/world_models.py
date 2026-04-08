@@ -408,11 +408,11 @@ class WorldModel(nn.Module):
     
     @profile
     # [수정] r=None 매개변수 추가
-    def calc_last_dist_feat(self, latent, action, inference_params=None, r=None):
+    def calc_last_dist_feat(self, latent, action, inference_params=None, r=None, is_first=None):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             if self.model == 'Transformer':
                 temporal_mask = get_subsequent_mask(latent)
-                dist_feat = self.sequence_model(latent, action, temporal_mask)
+                dist_feat = self.sequence_model(latent, action, temporal_mask, is_first=is_first)
             else:
                 # [수정] 진짜 보상을 Two-hot 인코딩하고 시간축으로 Shift하여 r_{t-1} 형태로 Mamba에 주입
                 if r is not None:
@@ -423,7 +423,7 @@ class WorldModel(nn.Module):
                     r_shifted = None
                     
                 mamba_input = self._prepare_mamba_input(latent, action, r_shifted)
-                dist_feat = self.sequence_model(mamba_input, inference_params=inference_params)
+                dist_feat = self.sequence_model(mamba_input, inference_params=inference_params, is_first=is_first)
                 
             last_dist_feat = dist_feat[:, -1:]
             prior_logits = self.dist_head.forward_prior(last_dist_feat)
@@ -456,14 +456,14 @@ class WorldModel(nn.Module):
         return post_flattened_sample, post_feat    
     @profile
     # only called when using Transformer
-    def predict_next(self, last_flattened_sample, action, log_video=True, r=None):
+    def predict_next(self, last_flattened_sample, action, log_video=True, r=None, is_first=None):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             if self.model == 'Transformer':
-                dist_feat = self.sequence_model.forward_with_kv_cache(last_flattened_sample, action)
+                dist_feat = self.sequence_model.forward_with_kv_cache(last_flattened_sample, action, is_first=is_first)
             else:
                 # [수정] r을 함께 병합하여 전달
                 mamba_input = self._prepare_mamba_input(last_flattened_sample, action, r)
-                dist_feat = self.sequence_model(mamba_input)
+                dist_feat = self.sequence_model(mamba_input, is_first=is_first)
                 
             prior_logits = self.dist_head.forward_prior(dist_feat)
 
@@ -524,7 +524,7 @@ class WorldModel(nn.Module):
             self.termination_hat_buffer = torch.zeros(scalar_size, dtype=dtype, device=device)
     @profile
     #transformer도 첫 번째 루프에서는 reward를 예측하는 게 아니라 받아오는 식으로 수정해야 함. 지금은 살짝 혼종 상태.
-    def imagine_data(self, agent: agents.ActorCriticAgent, sample_obs, sample_action,
+    def imagine_data(self, agent: agents.ActorCriticAgent, sample_obs, sample_action, sample_is_first,
                      imagine_batch_size, imagine_batch_length, log_video, logger, global_step):
 
         self.init_imagine_buffer(imagine_batch_size, imagine_batch_length, dtype=self.tensor_dtype, device=self.device)
@@ -544,7 +544,8 @@ class WorldModel(nn.Module):
                 context_latent[:, i:i+1],
                 sample_action[:, i:i+1],
                 log_video=log_video,
-                r=last_r_encoded
+                r=last_r_encoded,
+                is_first=sample_is_first[:, i:i+1]
             )
             # [수정됨] 예측된 보상 확률 분포를 다음 스텝의 r_{t-1}로 업데이트
             last_r_encoded = last_reward_probs.to(self.tensor_dtype)
@@ -580,7 +581,7 @@ class WorldModel(nn.Module):
         return torch.cat([self.sample_buffer, self.dist_feat_buffer], dim=-1), self.action_buffer, None, None, self.reward_hat_buffer, self.termination_hat_buffer
 
     @profile
-    def imagine_data2(self, agent: agents.ActorCriticAgent, sample_obs, sample_action, sample_reward,
+    def imagine_data2(self, agent: agents.ActorCriticAgent, sample_obs, sample_action, sample_reward, sample_is_first,
                      imagine_batch_size, imagine_batch_length, log_video, logger, global_step):
         self.init_imagine_buffer(imagine_batch_size, imagine_batch_length, dtype=self.tensor_dtype, device=self.device)
         # context
@@ -630,14 +631,16 @@ class WorldModel(nn.Module):
         # ------------------------------------------------------------------
         # [수정 3] get_hidden_state가 단일 텐서(mamba_input)만 받도록 서명 수정
         # ------------------------------------------------------------------
-        def get_hidden_state(mamba_input, inference_params):
+        def get_hidden_state(mamba_input, inference_params, is_first=None):
             if inference_params is None:
-                return self.sequence_model(mamba_input)
+                return self.sequence_model(mamba_input, is_first=is_first)
             decoding = inference_params.seqlen_offset > 0
-            if not use_cg_decode or not decoding:
+            has_reset = is_first is not None and bool(torch.any(is_first > 0.5))
+            if not use_cg_decode or not decoding or has_reset:
                 hidden_state = self.sequence_model(
                     mamba_input, 
-                    inference_params=inference_params
+                    inference_params=inference_params,
+                    is_first=is_first,
                 )
             else:
                 hidden_state = self.sequence_model._decoding_cache.run(
@@ -666,7 +669,7 @@ class WorldModel(nn.Module):
             # [수정 4] Context 병렬 처리 시 단일 mamba_input 생성 후 전달
             # ------------------------------------------------------------------
             context_mamba_input = self._prepare_mamba_input(context_latent, sample_action, context_r)
-            context_dist_feat = get_hidden_state(context_mamba_input, inference_params)
+            context_dist_feat = get_hidden_state(context_mamba_input, inference_params, is_first=sample_is_first)
             
             if inference_params is not None:
                 inference_params.seqlen_offset += context_dist_feat.shape[1]
@@ -675,6 +678,7 @@ class WorldModel(nn.Module):
             context_flattened_sample = self.flatten_sample(context_prior_sample)
 
             running_mamba_input = context_mamba_input if inference_params is None else None
+            running_is_first = sample_is_first if inference_params is None else None
 
             dist_feat_list, sample_list  = [context_dist_feat[:, -1:]], [context_flattened_sample[:, -1:]]
             self.sample_buffer[:, 0:1] = context_flattened_sample[:, -1:]
@@ -700,7 +704,11 @@ class WorldModel(nn.Module):
                 step_mamba_input = self._prepare_mamba_input(sample_list[-1], action_list[-1], last_r_encoded)
                 if inference_params is None:
                     running_mamba_input = torch.cat([running_mamba_input, step_mamba_input], dim=1)
-                    dist_feat = get_hidden_state(running_mamba_input, inference_params)[:, -1:]
+                    running_is_first = torch.cat(
+                        [running_is_first, torch.zeros((running_is_first.shape[0], 1), device=running_is_first.device, dtype=running_is_first.dtype)],
+                        dim=1,
+                    )
+                    dist_feat = get_hidden_state(running_mamba_input, inference_params, is_first=running_is_first)[:, -1:]
                 else:
                     dist_feat = get_hidden_state(step_mamba_input, inference_params)
                 
@@ -741,7 +749,7 @@ class WorldModel(nn.Module):
 
 
     @profile
-    def update(self, obs, action, reward, termination, global_step, epoch_step, logger=None):
+    def update(self, obs, action, reward, termination, is_first, global_step, epoch_step, logger=None):
         self.train()
         batch_size, batch_length = obs.shape[:2]
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
@@ -760,15 +768,16 @@ class WorldModel(nn.Module):
             r_twohot = self.symlog_twohot_loss_func.encode(reward).to(flattened_sample.dtype)
             r_shifted = torch.zeros_like(r_twohot)
             r_shifted[:, 1:, :] = r_twohot[:, :-1, :]
+            is_first = is_first.to(device=flattened_sample.device, dtype=flattened_sample.dtype)
             # ---------------------------------------------------------
 
             # dynamics models
             if self.model == 'Transformer':
                 temporal_mask = get_subsequent_mask_with_batch_length(batch_length, flattened_sample.device)
-                dist_feat = self.sequence_model(flattened_sample, action, temporal_mask)
+                dist_feat = self.sequence_model(flattened_sample, action, temporal_mask, is_first=is_first)
             else:
                 mamba_input = self._prepare_mamba_input(flattened_sample, action, r_shifted)
-                dist_feat = self.sequence_model(mamba_input)
+                dist_feat = self.sequence_model(mamba_input, is_first=is_first)
             prior_logits = self.dist_head.forward_prior(dist_feat)
 
             # decoding reward and termination with dist_feat
