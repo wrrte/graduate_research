@@ -51,6 +51,24 @@ Train with the default hyperparameters (the configuration files can be found in 
 ```
 python train.py
 ```
+
+To avoid interactive W&B login prompts on every run, use either:
+
+1. Environment variable
+```
+export WANDB_API_KEY="<your_wandb_api_key>"
+python train.py
+```
+
+2. Local key file in repository root (ignored by git)
+```
+echo "<your_wandb_api_key>" > .wandb_api_key
+chmod 600 .wandb_api_key
+python train.py
+```
+
+You can also change the key file path with `WANDB_API_KEY_FILE`.
+
 If one wants to change the hyperparmeter there are two ways:
 
 1. Edit the configuration file `config_files/train.yaml`.

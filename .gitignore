@@ -9,3 +9,4 @@ test/
 saved_models/
 backup/
 config.yaml
+.wandb_api_key

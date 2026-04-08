@@ -2,6 +2,7 @@ import torch
 import os
 import numpy as np
 import random
+from pathlib import Path
 from tensorboardX import SummaryWriter
 import wandb
 
@@ -48,12 +49,29 @@ class WandbLogger():
             path (str): Path to the directory where logs will be saved. This can be used to define the run name in W&B.
             project (str, optional): Name of the W&B project. Defaults to None.
         """
+        self._auto_login(mode)
+
         # Initialize a W&B run with the given project and path as the run name
         pure_env_name = config.BasicSettings.Env_name.split('/')[-1].split('-')[0]
         run_name = f"{config.Models.WorldModel.Backbone}_{config.Models.Agent.Policy}_{pure_env_name}_seed{config.BasicSettings.Seed}"
         self.run = wandb.init(project=project, config=config, mode=mode, name=run_name)
         self.run.name = f"{self.run.name}_{self.run.id}"
         self.tag_step = {}
+
+    def _auto_login(self, mode):
+        if str(mode).lower() in {"disabled", "offline"}:
+            return
+
+        api_key = os.getenv("WANDB_API_KEY", "").strip()
+        if not api_key:
+            key_file = os.getenv("WANDB_API_KEY_FILE", ".wandb_api_key")
+            if key_file:
+                key_path = Path(key_file).expanduser()
+                if key_path.exists() and key_path.is_file():
+                    api_key = key_path.read_text(encoding="utf-8").strip()
+
+        if api_key:
+            wandb.login(key=api_key, relogin=True)
 
 
     def log(self, tag, value, global_step):
