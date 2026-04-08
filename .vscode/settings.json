@@ -1,5 +1,5 @@
 {
-    "python.defaultInterpreterPath": "/usr/bin/python",
+    "python.defaultInterpreterPath": "/home/your_user/anaconda3/envs/Drama/bin/python",
     "python-envs.defaultEnvManager": "ms-python.python:pip",
     "python-envs.defaultPackageManager": "ms-python.python:pip",
     "python.analysis.useLibraryCodeForTypes": true
