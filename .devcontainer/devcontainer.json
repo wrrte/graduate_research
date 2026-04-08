@@ -1,10 +1,16 @@
 {
-    "name": "A6000-NVIDIA-PyTorch",
-    "image": "nvcr.io/nvidia/pytorch:24.05-py3",
+    "name": "graduate-research-local",
+    "image": "graduate_research:latest",
+    "containerEnv": {
+        "CUDA_VISIBLE_DEVICES": "3,4"
+    },
     "runArgs": [
-        "--gpus", "all",
+        "--gpus",
+        "all",
         "--shm-size=16gb"
     ],
+    "workspaceMount": "source=/home/choemj/projects/graduate_research,target=/workspace,type=bind",
+    "workspaceFolder": "/workspace",
     "customizations": {
         "vscode": {
             "extensions": [
@@ -12,6 +18,5 @@
                 "ms-toolsai.jupyter"
             ]
         }
-    },
-    "workspaceFolder": "/workspace"
+    }
 }
