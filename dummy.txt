@@ -1,0 +1,1 @@
+Alien, Hero, MsPacman, PrivateEye, Seaquest는 r_dim 255 상태에서 학습됨
