@@ -53,7 +53,7 @@ class WandbLogger():
 
         # Initialize a W&B run with the given project and path as the run name
         pure_env_name = config.BasicSettings.Env_name.split('/')[-1].split('-')[0]
-        run_name = f"{config.Models.WorldModel.Backbone}_{config.Models.Agent.Policy}_{pure_env_name}_seed{config.BasicSettings.Seed}"
+        run_name = f"{pure_env_name}_{config.Models.WorldModel.Backbone}_{config.Models.Agent.Policy}_seed{config.BasicSettings.Seed}"
         self.run = wandb.init(project=project, config=config, mode=mode, name=run_name)
         self.run.name = f"{self.run.name}_{self.run.id}"
         self.tag_step = {}
