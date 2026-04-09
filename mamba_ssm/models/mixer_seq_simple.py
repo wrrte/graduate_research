@@ -5,6 +5,7 @@ from functools import partial
 import json
 import os
 import copy
+import inspect
 
 from collections import namedtuple
 
@@ -235,6 +236,11 @@ class MixerModel(nn.Module):
             ]
         )
 
+        self._supports_seq_idx = all(
+            "seq_idx" in inspect.signature(layer.mixer.forward).parameters
+            for layer in self.layers
+        )
+
         self.norm_f = (nn.LayerNorm if not rms_norm else RMSNorm)(
             d_model, eps=norm_epsilon, **factory_kwargs
         )
@@ -297,6 +303,12 @@ class MixerModel(nn.Module):
         if is_first.shape[1] != seq_len:
             raise ValueError(f"Expected is_first length={seq_len}, got {is_first.shape[1]}")
         return (is_first.to(device=device) > 0.5)
+
+    @staticmethod
+    def _build_seq_idx(is_first_mask):
+        seq_idx = torch.cumsum(is_first_mask.long(), dim=1)
+        seq_idx = seq_idx - seq_idx[:, :1]
+        return seq_idx.to(dtype=torch.int32)
 
     @staticmethod
     def _reset_cache_rows(inference_params, reset_mask):
@@ -389,6 +401,23 @@ class MixerModel(nn.Module):
 
         if is_first_mask is None or not bool(torch.any(is_first_mask)):
             return self._forward_no_reset(mamba_input, inference_params=inference_params, **mixer_kwargs)
+
+        if self._supports_seq_idx:
+            seq_idx = self._build_seq_idx(is_first_mask)
+            if inference_params is None:
+                return self._forward_no_reset(
+                    mamba_input,
+                    inference_params=None,
+                    seq_idx=seq_idx,
+                    **mixer_kwargs,
+                )
+            if inference_params.seqlen_offset == 0:
+                return self._forward_no_reset(
+                    mamba_input,
+                    inference_params=inference_params,
+                    seq_idx=seq_idx,
+                    **mixer_kwargs,
+                )
 
         if inference_params is None:
             return self._forward_segmented(mamba_input, is_first_mask, **mixer_kwargs)
