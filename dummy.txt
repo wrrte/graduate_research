@@ -1,1 +1,33 @@
-Alien, Hero, MsPacman, PrivateEye, Seaquest는 r_dim 255 상태에서 학습됨
+요구하신 기능을 학습 파이프라인에 직접 넣었습니다.
+이제 리플레이 버퍼 초기화 직후에 play.py로 저장한 npz 기록을 자동 주입하고, 키 입력 기반 액션 매핑이 학습 환경 액션 의미와 일치하는지 검증합니다.
+
+변경된 위치
+
+액션 매핑 표준(0~17) 정의 추가: train.py:28
+데모 액션/형식 검증 함수 추가: train.py:113
+데모 로드 및 버퍼 삽입 함수 추가: train.py:166
+리플레이 버퍼 생성 직후 preload 호출 추가: train.py:634
+데모 설정 섹션 추가: configure.yaml:43
+무엇이 동작하는지
+
+demonstrations 폴더의 npz를 자동 탐색해서 로드합니다.
+npz 키 검증: obs, action, reward, done(또는 termination) 확인.
+obs shape가 현재 버퍼 shape와 다르면 즉시 에러로 중단.
+action이 정수인지, action_space 범위 안인지 검사.
+play.py 키 매핑 기준 액션 의미(NOOP, FIRE, UP...)와 현재 환경 action meanings를 대조.
+불일치 시 학습 시작 전에 명확한 에러를 발생시켜, 잘못된 키-액션 기록이 섞이지 않게 했습니다.
+done/termination으로부터 is_first를 재구성해서 replay_buffer.append에 맞게 삽입합니다.
+검증 결과
+
+train.py 문법 컴파일 통과 (python3 -m py_compile train.py).
+configure.yaml 파싱 통과, Demonstration 섹션 정상 인식.
+현재 워크스페이스에는 demonstrations 폴더/npz가 없어 실제 preload 데이터 주입까지는 실행 확인하지 못했습니다.
+사용 방법
+
+play.py로 만든 npz 파일을 프로젝트 루트의 demonstrations 폴더에 둡니다.
+환경을 ALE/PrivateEye-v5로 학습 실행하면, replay buffer 생성 직후 자동 주입됩니다.
+데모 옵션은 configure.yaml:43에서 조절합니다.
+Enable: 데모 preload 사용 여부
+Directory: 데모 폴더
+MaxFiles: 0이면 전체 파일
+StrictActionCheck: 키-액션 의미 강검증 on/off
