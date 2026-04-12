@@ -40,6 +40,12 @@ JointTrainAgent:
   Alpha: 1.0 # High focus on penalising high imagine counts regardless of train counts, less probability to be sampled
   Beta: 1.0 # High focus on penalising 
 
+Demonstration:
+  Enable: true
+  Directory: demonstrations
+  MaxFiles: 0
+  StrictActionCheck: true
+
 Models:
   WorldModel:
     dtype: float32
