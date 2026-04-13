@@ -13,7 +13,7 @@ from pathlib import Path
 from utils import seed_np_torch, WandbLogger
 from replay_buffer import ReplayBuffer
 import agents
-from ac_cpc_world_model import WorldModel
+from sub_models.world_models import WorldModel
 from mamba_ssm import InferenceParams
 from line_profiler import profile
 import yaml
