@@ -13,7 +13,7 @@ from pathlib import Path
 from utils import seed_np_torch, WandbLogger
 from replay_buffer import ReplayBuffer
 import agents
-from sub_models.world_models import WorldModel
+from ac_cpc_world_model import WorldModel
 from mamba_ssm import InferenceParams
 from line_profiler import profile
 import yaml
@@ -263,11 +263,21 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
     epoch_representation_loss_list = []
     epoch_representation_real_kl_div_list = []
     epoch_total_loss_list = []
+    epoch_contrastive_loss_list = []
+    epoch_contrastive_acc_list = []
     for e in range(epoch):
         obs, action, reward, termination, is_first = replay_buffer.sample(batch_size, batch_length, imagine=False)
-        reconstruction_loss, reward_loss, termination_loss, \
-        dynamics_loss, dynamics_real_kl_div, representation_loss, \
-        representation_real_kl_div, total_loss = world_model.update(obs, action, reward, termination, is_first, global_step=global_step, epoch_step=e, logger=logger)
+        outputs = world_model.update(obs, action, reward, termination, is_first, global_step=global_step, epoch_step=e, logger=logger)
+
+        if len(outputs) == 10:
+            reconstruction_loss, reward_loss, termination_loss, \
+            dynamics_loss, dynamics_real_kl_div, representation_loss, \
+            representation_real_kl_div, total_loss, contrastive_loss, contrastive_acc = outputs
+        else:
+            reconstruction_loss, reward_loss, termination_loss, \
+            dynamics_loss, dynamics_real_kl_div, representation_loss, \
+            representation_real_kl_div, total_loss = outputs
+            contrastive_loss, contrastive_acc = 0.0, 0.0
 
         epoch_reconstruction_loss_list.append(reconstruction_loss)
         epoch_reward_loss_list.append(reward_loss)
@@ -277,6 +287,8 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
         epoch_representation_loss_list.append(representation_loss)
         epoch_representation_real_kl_div_list.append(representation_real_kl_div)
         epoch_total_loss_list.append(total_loss)
+        epoch_contrastive_loss_list.append(contrastive_loss)
+        epoch_contrastive_acc_list.append(contrastive_acc)
     if logger is not None:
         logger.log("WorldModel/reconstruction_loss", np.mean(epoch_reconstruction_loss_list), global_step=global_step)
         # logger.log("WorldModel/augmented_reconstruction_loss", augmented_reconstruction_loss.item(), global_step=global_step)
@@ -286,7 +298,9 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
         logger.log("WorldModel/dynamics_real_kl_div", np.mean(epoch_dynamics_real_kl_div_list), global_step=global_step)
         logger.log("WorldModel/representation_loss", np.mean(epoch_representation_loss_list), global_step=global_step)
         logger.log("WorldModel/representation_real_kl_div", np.mean(epoch_representation_real_kl_div_list), global_step=global_step)
-        logger.log("WorldModel/total_loss", np.mean(epoch_total_loss_list), global_step=global_step)    
+        logger.log("WorldModel/contrastive_loss", np.mean(epoch_contrastive_loss_list), global_step=global_step)
+        logger.log("WorldModel/contrastive_acc", np.mean(epoch_contrastive_acc_list), global_step=global_step)
+        logger.log("WorldModel/total_loss", np.mean(epoch_total_loss_list), global_step=global_step)
 
 @profile
 @torch.no_grad()

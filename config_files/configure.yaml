@@ -62,6 +62,18 @@ Models:
     Dropout: 0.1
     Unimix_ratio: 0.01
     Weight_decay: 1.0e-4
+    Contrastive:
+      Enable: true
+      Steps: 5
+      HiddenSize: 512
+      OutSize: 512
+      Layers: 2
+      LossScale: 1.0
+      ExpLambda: 0.75
+      Temperature: 0.1
+      MaxSamples: 1024
+      CropScale: [0.25, 1.0]
+      CropRatio: [0.9, 1.1]
     Adam:
       LearningRate: 1.0e-4
     Laprop:

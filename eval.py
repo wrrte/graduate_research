@@ -13,7 +13,7 @@ import os
 from utils import seed_np_torch, WandbLogger
 import env_wrapper
 import agents
-from sub_models.world_models import WorldModel
+from ac_cpc_world_model import WorldModel
 import yaml
 from utils import WandbLogger
 import pandas as pd
