@@ -890,21 +890,26 @@ class WorldModel(nn.Module):
                 sample_aug = self.stright_throught_gradient(post_logits_aug, sample_mode="random_sample")
                 flattened_sample_aug = self.flatten_sample(sample_aug)
 
+                # prior_flattened_sample[:, t] is a one-step latent prediction (toward t+1),
+                # because dynamics KL already aligns prior[:, :-1] with posterior[:, 1:].
                 prior_feature = torch.cat([prior_flattened_sample, dist_feat], dim=-1)
                 action_onehot = F.one_hot(action.long(), self.action_dim).to(prior_feature.dtype)
 
                 valid_steps = 0
-                for t in range(self.contrastive_steps):
-                    if batch_length - t <= 0:
-                        break
-
+                # t=0: predict z_{t+1} from prior at t (no extra action concat).
+                # t>0: predict farther future z_{t+1+t} using actions a_{t+1:t+t}.
+                max_steps = min(self.contrastive_steps, max(0, batch_length - 1))
+                for t in range(max_steps):
                     if t == 0:
-                        predictor_input = prior_feature
-                        target_input = flattened_sample_aug
+                        predictor_input = prior_feature[:, :-1]
+                        target_input = flattened_sample_aug[:, 1:]
                     else:
                         action_condition = self._build_future_action_condition(action_onehot, t)
-                        predictor_input = torch.cat([prior_feature[:, :-t], action_condition], dim=-1)
-                        target_input = flattened_sample_aug[:, t:]
+                        predictor_input = torch.cat([prior_feature[:, :-(t+1)], action_condition[:, :-1]], dim=-1)
+                        target_input = flattened_sample_aug[:, 1+t:]
+
+                    if predictor_input.shape[1] == 0 or target_input.shape[1] == 0:
+                        break
 
                     predictor_input, target_input = self._subsample_pairs(predictor_input, target_input)
                     predictor_output, representation_output = self.contrastive_network[t](predictor_input, target_input)
