@@ -7,6 +7,8 @@ import os
 import sys
 import keyboard
 
+Game = "Seaquest"  # 게임 이름을 상수로 정의
+
 # Gymnasium 1.0.0 이상 버전에서는 외부 환경(ALE)을 명시적으로 등록해야 합니다.
 gym.register_envs(ale_py)
 
@@ -166,7 +168,7 @@ def save_episode(data_list):
     
     os.makedirs('demonstrations', exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"demonstrations/private_eye_{timestamp}.npz"
+    filename = f"demonstrations/{Game}_{timestamp}.npz"
     
     # 리스트를 넘파이 배열로 변환
     observations = np.array([d[0] for d in data_list], dtype=np.uint8)
@@ -201,7 +203,7 @@ def manual_play_with_save(mode="rl"):
         return
 
     length = 0 if mode == "ppt" else 108000
-    env = Atari(name='ALE/PrivateEye-v5', action_repeat=4, size=(64, 64), gray=False, length=length)
+    env = Atari(name=f'ALE/{Game}-v5', action_repeat=4, size=(64, 64), gray=False, length=length)
     obs, info = env.reset()
     
     total_reward = 0
@@ -209,9 +211,9 @@ def manual_play_with_save(mode="rl"):
     
     print("\n" + "="*30)
     if mode == "ppt":
-        print("Private Eye 직접 플레이 & PPT 발표 모드 (시간 제한 없음)")
+        print(f"{Game} 직접 플레이 & PPT 발표 모드 (시간 제한 없음)")
     else:
-        print("Private Eye 직접 플레이 & 데이터 저장 모드")
+        print(f"{Game} 직접 플레이 & 데이터 저장 모드")
     print("조작: WASD(이동), Space(Action/Fire), Enter(일시정지), P(스크린샷), Q(저장 후 종료)")
     print("="*30)
 
@@ -232,7 +234,8 @@ def manual_play_with_save(mode="rl"):
             
             cv2.putText(display_img, f"Score: {int(total_reward)}", (20, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-            cv2.imshow("Private Eye - Manual Play & Record", display_img)
+            # 창 이름을 Game으로 변경
+            cv2.imshow(f"{Game} - Manual Play & Record", display_img)
             
             # 2. 다중 키 입력 처리 (keyboard 라이브러리 활용)
             cv2.waitKey(50) # 화면 렌더링 유지 및 프레임 속도 조절
@@ -262,7 +265,7 @@ def manual_play_with_save(mode="rl"):
             if keyboard.is_pressed('enter'):
                 cv2.putText(display_img, "PAUSED", (20, 80), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
-                cv2.imshow("Private Eye - Manual Play & Record", display_img)
+                cv2.imshow(f"{Game} - Manual Play & Record", display_img)
                 cv2.waitKey(300) # 중복 입력 방지 (Debounce)
                 while True:
                     if keyboard.is_pressed('enter'):
