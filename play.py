@@ -25,7 +25,7 @@ class Atari(gym.Env):
         noops=0,
         lives="discount",
         sticky=False,
-        actions="needed",
+        actions="needed", #나중에 all로 바꿔야할듯
         length=108000,
         resize="opencv",
         seed=None,
