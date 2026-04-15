@@ -1,41 +1,55 @@
-# docker build -f Dockerfile -t drama .
-# 24.05 baseline: CUDA 12.4.1 + PyTorch 2.4.x preinstalled in the image.
-FROM nvcr.io/nvidia/pytorch:24.05-py3
+# docker build -f Dockerfile -t drama-b200 .
+# B200/TMA focus: default to a Blackwell-capable (non-latest) NGC PyTorch image.
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.01-py3
+FROM ${BASE_IMAGE}
 
-WORKDIR /workspace
+ARG APP_DIR=/home/jovyan/gpus-4-nodes-volume/minjun/graduate_research
+ARG TORCH_CUDA_ARCH_LIST=10.0
+ARG FLASH_ATTN_VERSION=2.7.4.post1
+ARG CAUSAL_CONV1D_VERSION=1.6.1
+ARG MAMBA_SSM_TAG=v1.2.0.post1
 
-# Runtime libs used by gym/render/video stack.
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
+    CUDA_HOME=/usr/local/cuda \
+    MAX_JOBS=16 \
+    FLASH_ATTN_FORCE_BUILD=TRUE \
+    CAUSAL_CONV1D_FORCE_BUILD=TRUE \
+    MAMBA_FORCE_BUILD=TRUE
+
+WORKDIR ${APP_DIR}
+
+# Runtime + build deps for gym/render and CUDA extension source builds.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
     ffmpeg \
     libsm6 \
     libxext6 \
     tmux \
     && rm -rf /var/lib/apt/lists/*
 
-# Keep build tooling available for CUDA extension wheels.
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel packaging ninja
+RUN pip install --upgrade pip setuptools wheel packaging ninja cmake
 
-# NGC base image can include an "opencv" package that conflicts with
-# opencv-python-headless. Remove all OpenCV variants first.
+# Avoid conflicts with opencv-python-headless from requirements.
 RUN pip uninstall -y opencv opencv-python opencv-contrib-python opencv-contrib-python-headless || true
 
 COPY requirements.txt /tmp/requirements.txt
 
-# Build flash-attn from source against container-provided torch/cuda to
-# avoid ABI mismatch with NGC torch builds.
-RUN FLASH_ATTN_FORCE_BUILD=TRUE pip install --no-cache-dir --no-build-isolation \
-    --no-binary=flash-attn flash-attn==2.4.2
-# Install torch-dependent CUDA extensions before requirements to avoid
-# PEP517 build-isolation missing torch errors.
-RUN pip install --no-cache-dir causal-conv1d==1.6.1 --no-build-isolation
-# Install mamba-ssm from source tarball (not PyPI sdist) and keep
-# container-provided torch/triton stack by skipping dependency resolution.
-RUN pip install --no-cache-dir --no-build-isolation --no-deps \
-    "mamba-ssm @ https://github.com/state-spaces/mamba/archive/refs/tags/v1.2.0.post1.tar.gz"
-# Prevent pip resolver from reinstalling these CUDA extensions or pulling a different triton.
-RUN grep -Ev '^(mamba-ssm==|causal-conv1d==)' /tmp/requirements.txt > /tmp/requirements.base.txt \
-    && pip install --no-cache-dir -r /tmp/requirements.base.txt
+# Build architecture-sensitive CUDA extensions from source (no cached wheels).
+RUN pip install --no-build-isolation --no-binary=flash-attn \
+    flash-attn==${FLASH_ATTN_VERSION}
+RUN pip install --no-build-isolation --no-binary=causal-conv1d \
+    causal-conv1d==${CAUSAL_CONV1D_VERSION}
+RUN pip install --no-build-isolation --no-deps \
+    "mamba-ssm @ https://github.com/state-spaces/mamba/archive/refs/tags/${MAMBA_SSM_TAG}.tar.gz"
 
-COPY . /workspace
+# Keep NGC torch/triton stack and skip known CUDA-sensitive packages here.
+RUN grep -Ev '^(mamba-ssm==|causal-conv1d==|causal_conv1d==|flash-attn==|flash_attn==|torch==|torchvision==|torchaudio==|xformers==|triton==)' /tmp/requirements.txt \
+    > /tmp/requirements.base.txt \
+    && pip install -r /tmp/requirements.base.txt
+
+COPY . ${APP_DIR}
 
 EXPOSE 6006
