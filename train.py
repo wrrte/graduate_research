@@ -82,8 +82,8 @@ def _find_demo_files(demo_dir, env_name):
         game_name = str(env_name).split('/')[-1].split('-')[0]
         game_token = _normalise_token(game_name)
         matched = [file_path for file_path in all_files if game_token in _normalise_token(file_path.stem)]
-        if matched:
-            return matched
+        # if matched:
+        return matched
 
     return all_files
 
