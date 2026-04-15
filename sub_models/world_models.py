@@ -260,9 +260,11 @@ class WorldModel(nn.Module):
         self.model = config.Models.WorldModel.Backbone
         self.r_dim = 255
         self.mamba3_step_available = True
+        self.mamba3_step_import_error = None
         self._warned_missing_mamba3_step = False
         if self.model == 'Mamba3':
             self.mamba3_step_available = getattr(mamba3_module, "mamba3_step_fn", None) is not None
+            self.mamba3_step_import_error = getattr(mamba3_module, "mamba3_step_import_error", None)
         self.max_grad_norm = config.Models.WorldModel.Max_grad_norm  
         max_seq_length = max(config.JointTrainAgent.BatchLength, 
                              config.JointTrainAgent.ImagineContextLength + config.JointTrainAgent.ImagineBatchLength, 
@@ -695,6 +697,11 @@ class WorldModel(nn.Module):
         incremental_decode_disabled_reason = None
         if self.model == 'Mamba3' and not self.mamba3_step_available:
             incremental_decode_disabled_reason = "Mamba3 step kernel is unavailable (mamba3_step_fn is None)"
+            if self.mamba3_step_import_error is not None:
+                incremental_decode_disabled_reason += (
+                    f"; import failed with {type(self.mamba3_step_import_error).__name__}: "
+                    f"{self.mamba3_step_import_error}"
+                )
         if not use_incremental_decode and not self._warned_missing_mamba3_step:
             reason = incremental_decode_disabled_reason or "unknown runtime condition"
             print(

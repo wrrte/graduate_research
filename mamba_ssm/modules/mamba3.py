@@ -19,10 +19,12 @@ from mamba_ssm.ops.triton.mamba3.mamba3_siso_combined import mamba3_siso_combine
 
 from mamba_ssm.ops.triton.mamba3.mamba3_mimo_rotary_step import apply_rotary_qk_inference_fwd
 
+mamba3_step_import_error = None
 try:
     from mamba_ssm.ops.cute.mamba3.mamba3_step_fn import mamba3_step_fn
-except ImportError:    
+except ImportError as exc:
     mamba3_step_fn = None
+    mamba3_step_import_error = exc
 
 class Mamba3(nn.Module):
     def __init__(
