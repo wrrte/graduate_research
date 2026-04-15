@@ -15,7 +15,7 @@ from pytorch_warmup import LinearWarmup
 
 from sub_models.functions_losses import SymLogTwoHotLoss
 from utils import EMAScalar
-from line_profiler import profile
+from profiling import profile
 from tools import layer_init
 
 def percentile(x, percentage):

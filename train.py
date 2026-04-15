@@ -15,7 +15,7 @@ from replay_buffer import ReplayBuffer
 import agents
 from sub_models.world_models import WorldModel
 from mamba_ssm import InferenceParams
-from line_profiler import profile
+from profiling import profile
 import yaml
 from envs.my_memory_maze import MemoryMaze
 from envs.my_atari import Atari

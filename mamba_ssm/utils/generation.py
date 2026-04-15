@@ -662,6 +662,7 @@ def update_graph_cache(
                 batch_size,
                 max_seqlen, embedding_dim,
                 decoding_seqlen=decoding_seqlen,
+                dtype=dtype,
                 mempool=cache.mempool,
                 n_warmups=n_warmups,
             )
@@ -681,10 +682,20 @@ def update_graph_cache(
 
 
 def capture_graph(
-    model, inference_params, batch_size, max_seqlen, embedding_dim, decoding_seqlen=1, mempool=None, n_warmups=2
+    model,
+    inference_params,
+    batch_size,
+    max_seqlen,
+    embedding_dim,
+    decoding_seqlen=1,
+    dtype=None,
+    mempool=None,
+    n_warmups=2,
 ):
     device = next(iter(model.parameters())).device
-    dtype = next(iter(model.parameters())).dtype # Float 데이터 보존
+    if dtype is None:
+        dtype = next(iter(model.parameters())).dtype
+    amp_enabled = dtype in (torch.float16, torch.bfloat16)
 
     mamba_input_buffer = torch.zeros((batch_size, decoding_seqlen, embedding_dim), dtype=dtype, device=device)
     
@@ -698,11 +709,12 @@ def capture_graph(
         s.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(s):
             for _ in range(n_warmups):
-                hidden_state = model(
-                    mamba_input_buffer,
-                    inference_params=inference_params,
-                    num_last_tokens=decoding_seqlen,
-                )
+                with torch.autocast(device_type="cuda", dtype=dtype, enabled=amp_enabled):
+                    hidden_state = model(
+                        mamba_input_buffer,
+                        inference_params=inference_params,
+                        num_last_tokens=decoding_seqlen,
+                    )
             s.synchronize()
             # This might be needed for correctness if we run with NCCL_GRAPH_MIXING_SUPPORT=0,
             # which requires that graph launch and non-captured launch to not overlap (I think,
@@ -714,11 +726,12 @@ def capture_graph(
         # To allow capture, automatically sets a side stream as the current stream in the context
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, pool=mempool):
-            hidden_state = model(
-                mamba_input_buffer,
-                inference_params=inference_params,
-                num_last_tokens=decoding_seqlen,
-            )
+            with torch.autocast(device_type="cuda", dtype=dtype, enabled=amp_enabled):
+                hidden_state = model(
+                    mamba_input_buffer,
+                    inference_params=inference_params,
+                    num_last_tokens=decoding_seqlen,
+                )
 
     def run(new_mamba_input, seqlen):
         inference_params.lengths_per_sample[:] = seqlen

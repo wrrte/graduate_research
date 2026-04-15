@@ -19,7 +19,7 @@ from sub_models.transformer_model import StochasticTransformerKVCache
 from mamba_ssm import MambaWrapperModel, MambaConfig, InferenceParams, update_graph_cache
 from mamba_ssm.modules import mamba3 as mamba3_module
 import agents
-from line_profiler import profile
+from profiling import profile
 from torch.distributions.independent import Independent
 import numpy as np
 from tools import weight_init
@@ -252,7 +252,7 @@ class WorldModel(nn.Module):
         self.stoch_flattened_dim = self.categorical_dim*self.class_dim
         self.use_amp = config.BasicSettings.Use_amp
         self.use_cg = config.BasicSettings.Use_cg
-        self.tensor_dtype = torch.bfloat16 if self.use_amp and not self.use_cg else config.Models.WorldModel.dtype
+        self.tensor_dtype = torch.bfloat16 if self.use_amp else config.Models.WorldModel.dtype
         self.save_every_steps = config.JointTrainAgent.SaveEverySteps
         self.imagine_batch_size = -1
         self.imagine_batch_length = -1
@@ -729,6 +729,7 @@ class WorldModel(nn.Module):
         if use_cg_decode:
             if not hasattr(self.sequence_model, "_decoding_cache"):
                 self.sequence_model._decoding_cache = None
+            cache_dtype = torch.bfloat16 if self.use_amp else self.tensor_dtype
             self.sequence_model._decoding_cache = update_graph_cache(
                 self.sequence_model,
                 self.sequence_model._decoding_cache,
@@ -736,6 +737,7 @@ class WorldModel(nn.Module):
                 seqlen_og,
                 max_length,
                 mamba_input_dim, # [수정 2] embedding_dim 대신 확장된 mamba_input_dim 사용
+                dtype=cache_dtype,
             )
             inference_params = self.sequence_model._decoding_cache.inference_params
             inference_params.reset(max_length, imagine_batch_size)
@@ -773,7 +775,7 @@ class WorldModel(nn.Module):
                 return True
             return False
 
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp and not use_cg_decode):
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             # 1. 실제 보상을 255차원 Two-hot으로 변환
             r_twohot = self.symlog_twohot_loss_func.encode(sample_reward).to(self.tensor_dtype)
             
