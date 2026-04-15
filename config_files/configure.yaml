@@ -14,23 +14,23 @@ Evaluate:
    EpisodeNum: 10
    NumEnvs: 10
    DuringTraining: True
-   EverySteps: 1000
+   EverySteps: 2000
 
 JointTrainAgent:
   SampleMaxSteps: 105000 # Just to make sure the last episode will finish, no training after 100k
   BufferMaxLength: 100000
-  WorldModelWarmUp: 1032
-  BehaviourWarmUp: 1032
-  NumEnvs: 1
-  BatchSize: 16
+  WorldModelWarmUp: 4128
+  BehaviourWarmUp: 4128
+  NumEnvs: 4
+  BatchSize: 64
   BatchLength: 512
-  ImagineBatchSize: 1024
+  ImagineBatchSize: 4096
   ImagineContextLength: 8
   ImagineBatchLength: 16
   RealityContextLength: 16
-  TrainDynamicsEverySteps: 1
+  TrainDynamicsEverySteps: 4
   TrainDynamicsEpoch: 1
-  TrainAgentEverySteps: 1
+  TrainAgentEverySteps: 4
   FreezeWorldModelAfterSteps: 100000
   FreezeBehaviourAfterSteps: 100000
   SaveEverySteps: 2000
