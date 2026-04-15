@@ -666,9 +666,14 @@ def update_graph_cache(
                 n_warmups=n_warmups,
             )
 
-    def dispatch(samples, actions, seqlen):
+    def dispatch(samples, arg2, seqlen=None):
+        # Backward-compatible signature:
+        # - dispatch(samples, seqlen)
+        # - dispatch(samples, position_ids, seqlen)
+        if seqlen is None:
+            seqlen = arg2
         batch_size, decoding_seqlen = samples.shape[:2]
-        return cache.callables[batch_size, decoding_seqlen](samples, actions, seqlen)
+        return cache.callables[batch_size, decoding_seqlen](samples, seqlen)
 
     cache.run = dispatch
     cache.inference_params.seqlen_offset = 0  # Reset so it's not confusing

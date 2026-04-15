@@ -148,9 +148,19 @@ class Mamba3(nn.Module):
         if inference_params is not None:
             inference_batch = cu_seqlens.shape[0] - 1 if cu_seqlens is not None else batch
             angle_dt_state, ssm_state, k_state, v_state = self._get_states_from_cache(inference_params, inference_batch)
-            if inference_params.seqlen_offset > 0:
-                out, _, _, _, _ = self.step(u, angle_dt_state, ssm_state, k_state, v_state)
-                return out
+            if inference_params.seqlen_offset > 0 and self.d_state in (32, 64, 128):
+                if u.dim() == 3:
+                    if u.shape[1] != 1:
+                        raise ValueError(
+                            f"Incremental decode expects a single-token input, got shape {tuple(u.shape)}"
+                        )
+                    u_step = u[:, 0]
+                    out, _, _, _, _ = self.step(u_step, angle_dt_state, ssm_state, k_state, v_state)
+                    return out.unsqueeze(1)
+                if u.dim() == 2:
+                    out, _, _, _, _ = self.step(u, angle_dt_state, ssm_state, k_state, v_state)
+                    return out
+                raise ValueError(f"Unexpected input rank for incremental decode: {u.dim()}")
 
         # Apply in_proj
         zxBCdtAtrap = self.in_proj(u)

@@ -260,11 +260,19 @@ class WorldModel(nn.Module):
         self.model = config.Models.WorldModel.Backbone
         self.r_dim = 255
         self.mamba3_step_available = True
+        self.mamba3_step_unavailable_reason = None
         self.mamba3_step_import_error = None
         self._warned_missing_mamba3_step = False
         if self.model == 'Mamba3':
-            self.mamba3_step_available = getattr(mamba3_module, "mamba3_step_fn", None) is not None
+            step_fn_available = getattr(mamba3_module, "mamba3_step_fn", None) is not None
             self.mamba3_step_import_error = getattr(mamba3_module, "mamba3_step_import_error", None)
+            d_state = int(config.Models.WorldModel.Mamba.ssm_cfg.d_state)
+            d_state_supported = d_state in (32, 64, 128)
+            self.mamba3_step_available = step_fn_available and d_state_supported
+            if not d_state_supported:
+                self.mamba3_step_unavailable_reason = (
+                    f"Mamba3 step kernel requires d_state in [32, 64, 128], got {d_state}"
+                )
         self.max_grad_norm = config.Models.WorldModel.Max_grad_norm  
         max_seq_length = max(config.JointTrainAgent.BatchLength, 
                              config.JointTrainAgent.ImagineContextLength + config.JointTrainAgent.ImagineBatchLength, 
@@ -696,7 +704,9 @@ class WorldModel(nn.Module):
         use_cg_decode = self.use_cg and use_incremental_decode
         incremental_decode_disabled_reason = None
         if self.model == 'Mamba3' and not self.mamba3_step_available:
-            incremental_decode_disabled_reason = "Mamba3 step kernel is unavailable (mamba3_step_fn is None)"
+            incremental_decode_disabled_reason = self.mamba3_step_unavailable_reason
+            if incremental_decode_disabled_reason is None:
+                incremental_decode_disabled_reason = "Mamba3 step kernel is unavailable (mamba3_step_fn is None)"
             if self.mamba3_step_import_error is not None:
                 incremental_decode_disabled_reason += (
                     f"; import failed with {type(self.mamba3_step_import_error).__name__}: "
