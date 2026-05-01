@@ -13,6 +13,7 @@ from pytorch_warmup import LinearWarmup
 # from nfnets import AGC
 
 from sub_models.functions_losses import SymLogTwoHotLoss
+from sub_models.important_info_hash_loss import ImportantInfoHashLoss
 from sub_models.attention_blocks import get_subsequent_mask_with_batch_length, get_subsequent_mask
 from sub_models.contrastive_network import ActionConditionedContrastiveNetwork
 from sub_models.transformer_model import StochasticTransformerKVCache
@@ -425,6 +426,12 @@ class WorldModel(nn.Module):
         else:
             self.contrastive_augment = nn.Identity()
             self.contrastive_network = nn.ModuleList()
+
+        important_cfg = config.Models.WorldModel.ImportantInfoHashLoss if "ImportantInfoHashLoss" in config.Models.WorldModel else {}
+        self.important_info_hash_loss = ImportantInfoHashLoss(
+            latent_dim=self.stoch_flattened_dim,
+            config=important_cfg,
+        )
  
         self.mse_loss_func = MSELoss()
         self.ce_loss = nn.CrossEntropyLoss()
@@ -942,6 +949,13 @@ class WorldModel(nn.Module):
                 if valid_steps > 0:
                     contrastive_acc = contrastive_acc / valid_steps
 
+            important_hash_loss = self.important_info_hash_loss(
+                obs=obs,
+                latent=flattened_sample,
+                reward=reward,
+                encode_fn=self.encode_obs,
+            )
+
             # decoding reward and termination with dist_feat
             reward_hat = self.reward_decoder(dist_feat)
             termination_hat = self.termination_decoder(dist_feat)
@@ -953,7 +967,7 @@ class WorldModel(nn.Module):
             # dyn-rep loss
             dynamics_loss, dynamics_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:].detach(), prior_logits[:, :-1])
             representation_loss, representation_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:], prior_logits[:, :-1].detach())
-            total_loss = reconstruction_loss + reward_loss + termination_loss + dynamics_loss + 0.1*representation_loss + contrastive_loss
+            total_loss = reconstruction_loss + reward_loss + termination_loss + dynamics_loss + 0.1*representation_loss + contrastive_loss + important_hash_loss
 
         # gradient descent
         self.scaler.scale(total_loss).backward()
@@ -983,5 +997,6 @@ class WorldModel(nn.Module):
                 logger.log("Reconstruct/Reconstructed images", [final_image_resized], global_step=global_step)
 
         return  reconstruction_loss.item(), reward_loss.item(), termination_loss.item(), \
-                dynamics_loss.item(), dynamics_real_kl_div.item(), representation_loss.item(), \
-                representation_real_kl_div.item(), total_loss.item(), contrastive_loss.item(), contrastive_acc.item()
+            dynamics_loss.item(), dynamics_real_kl_div.item(), representation_loss.item(), \
+            representation_real_kl_div.item(), total_loss.item(), contrastive_loss.item(), contrastive_acc.item(), \
+            important_hash_loss.item()

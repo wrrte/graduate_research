@@ -265,19 +265,27 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
     epoch_total_loss_list = []
     epoch_contrastive_loss_list = []
     epoch_contrastive_acc_list = []
+    epoch_important_hash_loss_list = []
     for e in range(epoch):
         obs, action, reward, termination, is_first = replay_buffer.sample(batch_size, batch_length, imagine=False)
         outputs = world_model.update(obs, action, reward, termination, is_first, global_step=global_step, epoch_step=e, logger=logger)
 
-        if len(outputs) == 10:
+        if len(outputs) == 11:
+            reconstruction_loss, reward_loss, termination_loss, \
+            dynamics_loss, dynamics_real_kl_div, representation_loss, \
+            representation_real_kl_div, total_loss, contrastive_loss, contrastive_acc, \
+            important_hash_loss = outputs
+        elif len(outputs) == 10:
             reconstruction_loss, reward_loss, termination_loss, \
             dynamics_loss, dynamics_real_kl_div, representation_loss, \
             representation_real_kl_div, total_loss, contrastive_loss, contrastive_acc = outputs
+            important_hash_loss = 0.0
         else:
             reconstruction_loss, reward_loss, termination_loss, \
             dynamics_loss, dynamics_real_kl_div, representation_loss, \
             representation_real_kl_div, total_loss = outputs
             contrastive_loss, contrastive_acc = 0.0, 0.0
+            important_hash_loss = 0.0
 
         epoch_reconstruction_loss_list.append(reconstruction_loss)
         epoch_reward_loss_list.append(reward_loss)
@@ -289,6 +297,7 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
         epoch_total_loss_list.append(total_loss)
         epoch_contrastive_loss_list.append(contrastive_loss)
         epoch_contrastive_acc_list.append(contrastive_acc)
+        epoch_important_hash_loss_list.append(important_hash_loss)
     if logger is not None:
         logger.log("WorldModel/reconstruction_loss", np.mean(epoch_reconstruction_loss_list), global_step=global_step)
         # logger.log("WorldModel/augmented_reconstruction_loss", augmented_reconstruction_loss.item(), global_step=global_step)
@@ -300,6 +309,7 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
         logger.log("WorldModel/representation_real_kl_div", np.mean(epoch_representation_real_kl_div_list), global_step=global_step)
         logger.log("WorldModel/contrastive_loss", np.mean(epoch_contrastive_loss_list), global_step=global_step)
         logger.log("WorldModel/contrastive_acc", np.mean(epoch_contrastive_acc_list), global_step=global_step)
+        logger.log("WorldModel/important_info_hash_loss", np.mean(epoch_important_hash_loss_list), global_step=global_step)
         logger.log("WorldModel/total_loss", np.mean(epoch_total_loss_list), global_step=global_step)
 
 @profile
