@@ -477,9 +477,9 @@ def joint_train_world_model_agent(config, logdir,
                 global_step=total_steps
             )
 
-        if config.Evaluate.DuringTraining and total_steps % (config.Evaluate.EverySteps // config.JointTrainAgent.NumEnvs) == 0:
+        if config.Evaluate.DuringTraining and total_steps % (config.Evaluate.EverySteps // config.JointTrainAgent.NumEnvs) == 0 and (total_steps > config.JointTrainAgent.WorldModelWarmUp or total_steps==0):
             _ = eval_episodes(config, world_model, agent, logger, total_steps)
-        if config.JointTrainAgent.SaveModels and total_steps % (config.JointTrainAgent.SaveEverySteps // config.JointTrainAgent.NumEnvs) == 0:
+        if config.JointTrainAgent.SaveModels and total_steps % (config.JointTrainAgent.SaveEverySteps // config.JointTrainAgent.NumEnvs) == 0 and total_steps > config.JointTrainAgent.WorldModelWarmUp:
             print(colorama.Fore.GREEN + f"Saving model at total steps {total_steps}" + colorama.Style.RESET_ALL)
             torch.save(world_model.state_dict(), f"{logdir}/ckpt/world_model.pth")
             torch.save(agent.state_dict(), f"{logdir}/ckpt/agent.pth")

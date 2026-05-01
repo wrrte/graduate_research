@@ -14,7 +14,7 @@ Evaluate:
    EpisodeNum: 10
    NumEnvs: 10
    DuringTraining: True
-   EverySteps: 2000
+   EverySteps: 4000
 
 JointTrainAgent:
   SampleMaxSteps: 105000 # Just to make sure the last episode will finish, no training after 100k
@@ -28,12 +28,12 @@ JointTrainAgent:
   ImagineContextLength: 8
   ImagineBatchLength: 16
   RealityContextLength: 16
-  TrainDynamicsEverySteps: 4
+  TrainDynamicsEverySteps: 8
   TrainDynamicsEpoch: 1
-  TrainAgentEverySteps: 4
+  TrainAgentEverySteps: 8
   FreezeWorldModelAfterSteps: 100000
   FreezeBehaviourAfterSteps: 100000
-  SaveEverySteps: 2000
+  SaveEverySteps: 8000
   SaveModels: True
   Tau: 10
   ImaginationTau: 10

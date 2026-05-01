@@ -57,11 +57,11 @@ class ReplayBuffer():
                 score = counts - self.alpha * imagine_counts - self.beta * linear_penalty
                 score = score / self.imagination_tau
                 probabilities = torch.softmax(score, dim=0)
-                start_indexes = torch.multinomial(probabilities, batch_size, replacement=False)
+                start_indexes = torch.multinomial(probabilities, batch_size, replacement=True)
             else:
                 logits = -counts / self.tau
                 probabilities = torch.exp(logits) / torch.sum(torch.exp(logits))
-                start_indexes = torch.multinomial(probabilities, batch_size, replacement=False)
+                start_indexes = torch.multinomial(probabilities, batch_size, replacement=True)
 
             if not imagine:
                 self.sampled_counter[start_indexes] += 1
