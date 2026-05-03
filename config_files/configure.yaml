@@ -23,6 +23,7 @@ JointTrainAgent:
   BehaviourWarmUp: 1024
   NumEnvs: 8
   BatchSize: 128
+  WorldModelMicroBatchSize: 16
   BatchLength: 512
   ImagineBatchSize: 8192
   ImagineContextLength: 8
