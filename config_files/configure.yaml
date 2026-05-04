@@ -14,17 +14,16 @@ Evaluate:
    EpisodeNum: 10
    NumEnvs: 10
    DuringTraining: True
-   EverySteps: 4000
+   EverySteps: 2000
 
 JointTrainAgent:
   SampleMaxSteps: 105000 # Just to make sure the last episode will finish, no training after 100k
   BufferMaxLength: 100000
-  WorldModelWarmUp: 1024
-  BehaviourWarmUp: 1024
+  WorldModelWarmUp: 128
+  BehaviourWarmUp: 128
   NumEnvs: 8
   BatchSize: 128
-  WorldModelMicroBatchSize: 16
-  BatchLength: 512
+  BatchLength: 128
   ImagineBatchSize: 8192
   ImagineContextLength: 8
   ImagineBatchLength: 16
@@ -32,9 +31,9 @@ JointTrainAgent:
   TrainDynamicsEverySteps: 8
   TrainDynamicsEpoch: 1
   TrainAgentEverySteps: 8
-  FreezeWorldModelAfterSteps: 100000
-  FreezeBehaviourAfterSteps: 100000
-  SaveEverySteps: 8000
+  FreezeWorldModelAfterSteps: 12500
+  FreezeBehaviourAfterSteps: 12500
+  SaveEverySteps: 2000
   SaveModels: True
   Tau: 10
   ImaginationTau: 10
@@ -55,7 +54,7 @@ Models:
     Act: SiLU
     CategoricalDim: 32
     ClassDim: 32
-    HiddenStateDim: 1024
+    HiddenStateDim: 512
     Optimiser: Laprop
     LatentDiscreteType: naive
     Max_grad_norm: 1000
@@ -76,13 +75,13 @@ Models:
       CropScale: [0.25, 1.0]
       CropRatio: [0.9, 1.1]
     ImportantInfoHashLoss:
-      Enable: true
+      Enable: false
       RewardThreshold: 0.5
       HashBits: 12
       MaxQueuePerKey: 8
       MaxPastSamples: 4
       MaxPairsPerBatch: 256
-      LossScale: 1.0
+      LossScale: 0.01
       StoreOnlyTriggered: true
     Adam:
       LearningRate: 1.0e-4
