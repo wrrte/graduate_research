@@ -13,3 +13,4 @@ config.yaml
 .wandb_api_key
 *.npz
 *.so
+csrc/
