@@ -19,8 +19,8 @@ Evaluate:
 JointTrainAgent:
   SampleMaxSteps: 105000 # Just to make sure the last episode will finish, no training after 100k
   BufferMaxLength: 100000
-  WorldModelWarmUp: 128
-  BehaviourWarmUp: 128
+  WorldModelWarmUp: 1024
+  BehaviourWarmUp: 1024
   NumEnvs: 8
   BatchSize: 128
   BatchLength: 128
@@ -31,8 +31,8 @@ JointTrainAgent:
   TrainDynamicsEverySteps: 8
   TrainDynamicsEpoch: 1
   TrainAgentEverySteps: 8
-  FreezeWorldModelAfterSteps: 12500
-  FreezeBehaviourAfterSteps: 12500
+  FreezeWorldModelAfterSteps: 100000
+  FreezeBehaviourAfterSteps: 100000
   SaveEverySteps: 2000
   SaveModels: True
   Tau: 10
