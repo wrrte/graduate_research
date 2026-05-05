@@ -113,11 +113,11 @@ def eval_episodes(config,
             # update current_obs, current_info and sum_reward
             sum_reward += reward
             current_obs = obs
-            current_is_first = done_flag.astype(np.float32)
 
             context_reward.append(reward.copy())
 
             done_flag = np.logical_or(done, truncated)
+            current_is_first = done_flag.astype(np.float32)
             if done_flag.any():
                 # inference_params = InferenceParams(max_seqlen=1, max_batch_size=1)
                 for i in range(config.Evaluate.NumEnvs):
