@@ -108,16 +108,20 @@ def eval_episodes(config,
             context_is_first.append(current_is_first.copy())
 
             obs, reward, done, truncated, info = vec_env.step(action)
+            
+            # 에러 방지를 위해 done_flag를 먼저 계산
+            done_flag = np.logical_or(done, truncated)
+            
             # cv2.imshow("current_obs", process_visualize(obs[0]))
             # cv2.waitKey(10)
             # update current_obs, current_info and sum_reward
             sum_reward += reward
             current_obs = obs
+            # 정상적으로 done_flag 참조 가능
+            current_is_first = done_flag.astype(np.float32)
 
             context_reward.append(reward.copy())
 
-            done_flag = np.logical_or(done, truncated)
-            current_is_first = done_flag.astype(np.float32)
             if done_flag.any():
                 # inference_params = InferenceParams(max_seqlen=1, max_batch_size=1)
                 for i in range(config.Evaluate.NumEnvs):
@@ -146,6 +150,9 @@ def eval_episodes(config,
                             for key, value in score_table.items():
                                 if key != 'episode' and not np.array(value).any() == None:
                                     logger.log(key, np.mean(value), global_step=global_step)
+                            
+                            # 좀비 프로세스 방지를 위한 환경 닫기 추가
+                            vec_env.close()
                             return score_table
 
 
