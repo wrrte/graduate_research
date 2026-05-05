@@ -21,16 +21,16 @@ JointTrainAgent:
   BufferMaxLength: 100000
   WorldModelWarmUp: 1024
   BehaviourWarmUp: 1024
-  NumEnvs: 2
-  BatchSize: 32
+  NumEnvs: 1
+  BatchSize: 16
   BatchLength: 128
-  ImagineBatchSize: 2048
+  ImagineBatchSize: 1024
   ImagineContextLength: 8
   ImagineBatchLength: 16
   RealityContextLength: 16
-  TrainDynamicsEverySteps: 2
+  TrainDynamicsEverySteps: 1
   TrainDynamicsEpoch: 1
-  TrainAgentEverySteps: 2
+  TrainAgentEverySteps: 1
   FreezeWorldModelAfterSteps: 100000
   FreezeBehaviourAfterSteps: 100000
   SaveEverySteps: 2000
@@ -75,7 +75,7 @@ Models:
       CropScale: [0.25, 1.0]
       CropRatio: [0.9, 1.1]
     ImportantInfoHashLoss:
-      Enable: false
+      Enable: true
       RewardThreshold: 0.5
       HashBits: 12
       MaxQueuePerKey: 8
