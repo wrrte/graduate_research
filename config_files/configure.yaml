@@ -21,16 +21,16 @@ JointTrainAgent:
   BufferMaxLength: 100000
   WorldModelWarmUp: 1024
   BehaviourWarmUp: 1024
-  NumEnvs: 8
-  BatchSize: 128
+  NumEnvs: 2
+  BatchSize: 32
   BatchLength: 128
-  ImagineBatchSize: 8192
+  ImagineBatchSize: 2048
   ImagineContextLength: 8
   ImagineBatchLength: 16
   RealityContextLength: 16
-  TrainDynamicsEverySteps: 8
+  TrainDynamicsEverySteps: 2
   TrainDynamicsEpoch: 1
-  TrainAgentEverySteps: 8
+  TrainAgentEverySteps: 2
   FreezeWorldModelAfterSteps: 100000
   FreezeBehaviourAfterSteps: 100000
   SaveEverySteps: 2000
@@ -41,7 +41,7 @@ JointTrainAgent:
   Beta: 1.0 # High focus on penalising 
 
 Demonstration:
-  Enable: true
+  Enable: false
   Directory: demonstrations
   MaxFiles: 0
   StrictActionCheck: true
