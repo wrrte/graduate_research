@@ -50,8 +50,11 @@ def eval_episodes(config,
     # print("Evaluating Env: " + colorama.Fore.YELLOW + f"{config.BasicSettings.Env_name}" + colorama.Style.RESET_ALL)
     sum_reward = np.zeros(config.Evaluate.NumEnvs)
     current_obs, _ = vec_env.reset()
+    current_is_first = np.ones(config.Evaluate.NumEnvs, dtype=np.float32)
     context_obs = deque(maxlen=config.JointTrainAgent.RealityContextLength)
     context_action = deque(maxlen=config.JointTrainAgent.RealityContextLength)
+    context_reward = deque(maxlen=config.JointTrainAgent.RealityContextLength)
+    context_is_first = deque(maxlen=config.JointTrainAgent.RealityContextLength)
 
     atari_benchmark_df = pd.read_csv("atari_performance.csv", index_col='Task', usecols=lambda column: column in ['Task', 'Alien', 'Amidar', 'Assault', 'Asterix', 'BankHeist', 'BattleZone', 'Boxing', 'Breakout', 'ChopperCommand', 'CrazyClimber', 'DemonAttack', 'Freeway', 'Frostbite', 'Gopher', 'Hero', 'Jamesbond', 'Kangaroo', 'Krull', 'KungFuMaster', 'MsPacman', 'Pong', 'PrivateEye', 'Qbert', 'RoadRunner', 'Seaquest', 'UpNDown'])
     atari_pure_name = config.BasicSettings.Env_name.split('/')[-1].split('-')[0]
@@ -71,14 +74,29 @@ def eval_episodes(config,
                 else:
                     context_latent = world_model.encode_obs(torch.cat(list(context_obs), dim=1).to(world_model.device))
                     model_context_action = np.stack(list(context_action), axis=1)
-                    model_context_action = torch.Tensor(model_context_action).to(world_model.device)
+                    model_context_action = torch.as_tensor(model_context_action, device=world_model.device)
+
+                    model_context_reward = np.stack(list(context_reward), axis=1)
+                    model_context_reward = torch.as_tensor(model_context_reward, device=world_model.device)
+
+                    model_context_is_first = np.stack(list(context_is_first), axis=1)
+                    model_context_is_first = torch.as_tensor(model_context_is_first, device=world_model.device)
                     # current_obs_tensor = rearrange(torch.Tensor(current_obs).to(world_model.device), "B H W C -> B 1 C H W")/255
                     if world_model.model == 'Transformer':
-                        prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(context_latent, model_context_action)
+                        prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(
+                            context_latent,
+                            model_context_action,
+                            is_first=model_context_is_first,
+                        )
                         # prior_flattened_sample, last_dist_feat = world_model.calc_last_post_feat(context_latent, model_context_action, current_obs_tensor)
                     elif world_model.model in ['Mamba', 'Mamba2', 'Mamba3']:
                         # prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(context_latent[:,-1:], model_context_action[:,-1:], inference_params)
-                        prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(context_latent, model_context_action)
+                        prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(
+                            context_latent,
+                            model_context_action,
+                            r=model_context_reward,
+                            is_first=model_context_is_first,
+                        )
                         # prior_flattened_sample, last_dist_feat = world_model.calc_last_post_feat(context_latent, model_context_action, current_obs_tensor)
                     action = agent.sample_as_env_action(
                         torch.cat([prior_flattened_sample, last_dist_feat], dim=-1),
@@ -87,6 +105,7 @@ def eval_episodes(config,
 
             context_obs.append(rearrange(torch.Tensor(current_obs).to(world_model.device), "B H W C -> B 1 C H W")/255)
             context_action.append(action)
+            context_is_first.append(current_is_first.copy())
 
             obs, reward, done, truncated, info = vec_env.step(action)
             # cv2.imshow("current_obs", process_visualize(obs[0]))
@@ -94,6 +113,9 @@ def eval_episodes(config,
             # update current_obs, current_info and sum_reward
             sum_reward += reward
             current_obs = obs
+            current_is_first = done_flag.astype(np.float32)
+
+            context_reward.append(reward.copy())
 
             done_flag = np.logical_or(done, truncated)
             if done_flag.any():
