@@ -766,7 +766,9 @@ if __name__ == "__main__":
         agent.load_state_dict(torch.load(f"{config.BasicSettings.SavePath}/agent.pth"))
    
     logger = WandbLogger(config=config, project=config.Wandb.Init.Project, mode=config.Wandb.Init.Mode)
-    logdir = f"./saved_models/{config.n}/{config.BasicSettings.Env_name}/{logger.run.id}"
+    
+    # 기존: logdir = f"./saved_models/{config.n}/{config.BasicSettings.Env_name}/{logger.run.id}"
+    logdir = f"/home/jovyan/gpu-4-nodes-volume2/minjun/graduate_research/saved_models/{config.n}/{config.BasicSettings.Env_name}/{logger.run.id}"
 
     # build replay buffer
     replay_buffer = ReplayBuffer(
