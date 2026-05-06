@@ -438,7 +438,7 @@ def joint_train_world_model_agent(config, logdir,
                                   replay_buffer: ReplayBuffer,
                                   world_model: WorldModel, agent: agents.ActorCriticAgent,
                                   logger,
-                                  demo_steps=0): # [수정] 데몬스트레이션 스텝 인자 추가
+                                  demo_steps=0):
     os.makedirs(f"{logdir}/ckpt", exist_ok=True)
 
     vec_env = build_vector_env(config)
@@ -457,15 +457,77 @@ def joint_train_world_model_agent(config, logdir,
     context_reward = deque(maxlen=config.JointTrainAgent.RealityContextLength)
     context_is_first = deque(maxlen=config.JointTrainAgent.RealityContextLength)
 
-    # [수정] 전체 샘플링해야 할 목표치에서 이미 수집된 데몬스트레이션 스텝 수를 차감합니다.
-    remaining_steps = max(0, config.JointTrainAgent.SampleMaxSteps - demo_steps)
-
-    # sample and train
-    for total_steps in tqdm(range(remaining_steps // num_envs), desc='Training'):
-        # [수정] global_step은 0이 아니라 데몬스트레이션 스텝부터 시작합니다.
-        global_step = demo_steps + total_steps * num_envs
+    # === [수정] 오프라인 사전 학습 (Offline Pre-training) 구간 ===
+    if demo_steps > 0:
+        # 데몬스트레이션 스텝 수를 학습 주기 단위로 환산하여 사전 학습 진행
+        pretrain_updates = demo_steps // config.JointTrainAgent.TrainDynamicsEverySteps
+        print(colorama.Fore.CYAN + f"\nStarting Offline Pre-training: {pretrain_updates} updates using demonstration data..." + colorama.Style.RESET_ALL)
         
-        # [이전 코드로 롤백] 복잡한 조건문 없이 ready() 플래그만으로 진행합니다.
+        for p_step in tqdm(range(pretrain_updates), desc='Pre-training (Offline)'):
+            # 로깅용 가상 스텝 (0부터 시작하여 demo_steps 직전까지 도달)
+            pseudo_global_step = p_step * config.JointTrainAgent.TrainDynamicsEverySteps
+            
+            # 1. World Model 사전 학습
+            if replay_buffer.ready('world_model'):
+                wm_micro_batch_size = int(_get_nested_config(
+                    config,
+                    'JointTrainAgent.WorldModelMicroBatchSize',
+                    config.JointTrainAgent.BatchSize,
+                ))
+                train_world_model_step(
+                    replay_buffer=replay_buffer,
+                    world_model=world_model,
+                    batch_size=config.JointTrainAgent.BatchSize,
+                    batch_length=config.JointTrainAgent.BatchLength,
+                    logger=logger,
+                    epoch=config.JointTrainAgent.TrainDynamicsEpoch,
+                    global_step=pseudo_global_step,
+                    micro_batch_size=wm_micro_batch_size,
+                )
+
+            # 2. Behaviour Model 사전 학습
+            if replay_buffer.ready('behaviour') and pseudo_global_step % config.JointTrainAgent.TrainAgentEverySteps == 0:
+                imagine_latent, agent_action, old_logits, context_latent, imagined_context_reward, imagined_context_termination, imagine_reward, imagine_termination = world_model_imagine_data(
+                    replay_buffer=replay_buffer,
+                    world_model=world_model,
+                    agent=agent,
+                    imagine_batch_size=config.JointTrainAgent.ImagineBatchSize,
+                    imagine_context_length=config.JointTrainAgent.ImagineContextLength,
+                    imagine_batch_length=config.JointTrainAgent.ImagineBatchLength,
+                    log_video=False, # 훈련 속도를 위해 사전 학습 중 비디오 로깅은 생략
+                    logger=logger,
+                    global_step=pseudo_global_step
+                )
+
+                agent.update(
+                    latent=imagine_latent,
+                    action=agent_action,
+                    old_logits=old_logits,
+                    context_latent=context_latent,
+                    context_reward=imagined_context_reward,
+                    context_termination=imagined_context_termination,
+                    reward=imagine_reward,
+                    termination=imagine_termination,
+                    logger=logger,
+                    global_step=pseudo_global_step
+                )
+        print(colorama.Fore.GREEN + "Offline Pre-training Complete!\n" + colorama.Style.RESET_ALL)
+    # =========================================================
+
+    remaining_steps = max(0, config.JointTrainAgent.SampleMaxSteps - demo_steps)
+    total_iters = config.JointTrainAgent.SampleMaxSteps // num_envs
+    initial_iters = demo_steps // num_envs
+
+    # sample and train (Online)
+    for total_steps in tqdm(range(remaining_steps // num_envs), 
+                            desc='Training (Online)',
+                            initial=initial_iters,
+                            total=total_iters):
+        
+        # [수정] 현재 스텝과 직전 스텝 계산 (경계 교차 기법용)
+        global_step = demo_steps + total_steps * num_envs
+        prev_global_step = global_step - num_envs 
+        
         wm_ready = replay_buffer.ready('world_model')
         
         # sample part >>>
@@ -556,9 +618,9 @@ def joint_train_world_model_agent(config, logdir,
 
                 sum_reward[env_idx] = 0.0
 
-
-
-        if replay_buffer.ready('world_model') and global_step % config.JointTrainAgent.TrainDynamicsEverySteps == 0 and global_step <= config.JointTrainAgent.FreezeWorldModelAfterSteps:
+        # [수정] World Model 업데이트 조건 (경계 교차 기법)
+        wm_train_every = config.JointTrainAgent.TrainDynamicsEverySteps
+        if replay_buffer.ready('world_model') and (prev_global_step // wm_train_every < global_step // wm_train_every) and global_step <= config.JointTrainAgent.FreezeWorldModelAfterSteps:
             wm_micro_batch_size = int(_get_nested_config(
                 config,
                 'JointTrainAgent.WorldModelMicroBatchSize',
@@ -575,9 +637,10 @@ def joint_train_world_model_agent(config, logdir,
                 micro_batch_size=wm_micro_batch_size,
             )
 
-
-        if replay_buffer.ready('behaviour') and global_step % config.JointTrainAgent.TrainAgentEverySteps == 0 and global_step <= config.JointTrainAgent.FreezeBehaviourAfterSteps:
-            log_video = global_step % config.JointTrainAgent.SaveEverySteps == 0
+        # [수정] Agent 업데이트 조건 (경계 교차 기법)
+        agent_train_every = config.JointTrainAgent.TrainAgentEverySteps
+        if replay_buffer.ready('behaviour') and (prev_global_step // agent_train_every < global_step // agent_train_every) and global_step <= config.JointTrainAgent.FreezeBehaviourAfterSteps:
+            log_video = (prev_global_step // config.JointTrainAgent.SaveEverySteps < global_step // config.JointTrainAgent.SaveEverySteps)
 
             imagine_latent, agent_action, old_logits, context_latent, imagined_context_reward, imagined_context_termination, imagine_reward, imagine_termination = world_model_imagine_data(
                 replay_buffer=replay_buffer,
@@ -604,9 +667,10 @@ def joint_train_world_model_agent(config, logdir,
                 global_step=global_step
             )
 
-        if config.Evaluate.DuringTraining and global_step % config.Evaluate.EverySteps == 0 and (global_step > config.JointTrainAgent.WorldModelWarmUp or global_step == 0):
+        if config.Evaluate.DuringTraining and (prev_global_step // config.Evaluate.EverySteps < global_step // config.Evaluate.EverySteps) and (global_step > config.JointTrainAgent.WorldModelWarmUp or global_step == 0):
             _ = eval_episodes(config, world_model, agent, logger, global_step)
-        if config.JointTrainAgent.SaveModels and global_step % config.JointTrainAgent.SaveEverySteps == 0 and global_step > config.JointTrainAgent.WorldModelWarmUp:
+            
+        if config.JointTrainAgent.SaveModels and (prev_global_step // config.JointTrainAgent.SaveEverySteps < global_step // config.JointTrainAgent.SaveEverySteps) and global_step > config.JointTrainAgent.WorldModelWarmUp:
             print(colorama.Fore.GREEN + f"Saving model at total steps {global_step}" + colorama.Style.RESET_ALL)
             torch.save(world_model.state_dict(), f"{logdir}/ckpt/world_model.pth")
             torch.save(agent.state_dict(), f"{logdir}/ckpt/agent.pth")
