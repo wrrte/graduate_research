@@ -41,6 +41,9 @@ class ReplayBuffer():
         self.alpha = config.JointTrainAgent.Alpha
         self.beta = config.JointTrainAgent.Beta
         self.batch_scale_factor = config.JointTrainAgent.ImagineBatchSize / config.JointTrainAgent.BatchSize
+        
+        # [추가] configure.yaml에서 데모 보존 비율을 읽어옵니다. (설정이 없으면 기본값 0.25 사용)
+        self.demo_ratio = getattr(config.Demonstration, 'DemoRatio', 0.25) if hasattr(config, 'Demonstration') else 0.25
 
     def ready(self, model_name='world_model'):
         return self.length  > self.world_model_warmup_length if model_name == 'world_model' else self.length  > self.behaviour_warmup_length
@@ -53,7 +56,7 @@ class ReplayBuffer():
             counts = self.sampled_counter[:valid_length]
             imagine_counts = self.imagined_counter[:valid_length] / self.batch_scale_factor
             
-            # 1. 확률 분포 계산 (기존 최적화 로직 완벽 유지)
+            # 1. 확률 분포 계산
             if imagine:
                 linear_penalty = torch.maximum(torch.zeros_like(counts), counts - imagine_counts)
                 score = counts - self.alpha * imagine_counts - self.beta * linear_penalty
@@ -63,40 +66,36 @@ class ReplayBuffer():
                 logits = -counts / self.tau
                 probabilities = torch.exp(logits) / torch.sum(torch.exp(logits))
 
-            # 2. 혼합 배치 샘플링 (확률 분포 기반 25% 데모 방어)
+            # 2. 혼합 배치 샘플링
             demo_size = getattr(self, 'protect_size', 0)
             demo_valid_size = demo_size - batch_length if demo_size > batch_length else 0
 
             if demo_valid_size > 0 and valid_length > demo_valid_size:
-                # 데모 구역이 전체 확률 분포에서 차지하는 '자연 확률 질량' 계산
                 demo_prob_mass = probabilities[:demo_valid_size].sum().item()
-                target_demo_ratio = max(0.25, demo_prob_mass)
+                # [수정] yaml에서 불러온 self.demo_ratio 값을 사용합니다.
+                target_demo_ratio = max(self.demo_ratio, demo_prob_mass)
                 
                 num_demo_samples = int(batch_size * target_demo_ratio)
                 num_agent_samples = batch_size - num_demo_samples
                 
                 if num_demo_samples > 0:
-                    # 데모 구역 내에서의 독립적인 확률 분포로 재정규화
                     prob_demo = probabilities[:demo_valid_size] / probabilities[:demo_valid_size].sum()
                     demo_indexes = torch.multinomial(prob_demo, num_demo_samples, replacement=True)
                 else:
                     demo_indexes = torch.empty(0, dtype=torch.long, device=self.device)
                     
                 if num_agent_samples > 0:
-                    # 에이전트 구역 내에서의 독립적인 확률 분포로 재정규화
                     prob_agent = probabilities[demo_valid_size:] / probabilities[demo_valid_size:].sum()
                     agent_indexes = torch.multinomial(prob_agent, num_agent_samples, replacement=True) + demo_valid_size
                 else:
                     agent_indexes = torch.empty(0, dtype=torch.long, device=self.device)
                     
                 start_indexes = torch.cat([demo_indexes, agent_indexes])
-                # 최종적으로 뽑힌 인덱스들을 무작위로 섞음
                 start_indexes = start_indexes[torch.randperm(batch_size, device=self.device)]
             else:
-                # 데모 구역이 없거나 데이터가 부족할 땐 기존 로직 그대로
                 start_indexes = torch.multinomial(probabilities, batch_size, replacement=True)
 
-            # 3. 데이터 추출 (기존 로직 완벽 유지)
+            # 3. 데이터 추출
             if not imagine:
                 self.sampled_counter[start_indexes] += 1
             else:
@@ -118,7 +117,6 @@ class ReplayBuffer():
             is_first = torch.cat(is_first_list, dim=0)
             
         else:
-            # === CPU 분기 ===
             obs_list, action_list, reward_list, termination_list, is_first_list = [], [], [], [], []
 
             if batch_size > 0:
@@ -143,7 +141,8 @@ class ReplayBuffer():
 
                 if demo_valid_size > 0 and valid_length > demo_valid_size:
                     demo_prob_mass = probabilities[:demo_valid_size].sum()
-                    target_demo_ratio = max(0.25, demo_prob_mass)
+                    # [수정] yaml에서 불러온 self.demo_ratio 값을 사용합니다.
+                    target_demo_ratio = max(self.demo_ratio, demo_prob_mass)
                     
                     num_demo_samples = int(batch_size * target_demo_ratio)
                     num_agent_samples = batch_size - num_demo_samples

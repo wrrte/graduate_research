@@ -45,6 +45,7 @@ Demonstration:
   Directory: demonstrations
   MaxFiles: 0
   StrictActionCheck: true
+  DemoRatio: 0.25  # 데모 데이터를 방어할 최소 보장 비율을 여기에 추가합니다.
 
 Models:
   WorldModel:
