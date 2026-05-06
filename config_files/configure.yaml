@@ -41,7 +41,7 @@ JointTrainAgent:
   Beta: 1.0 # High focus on penalising 
 
 Demonstration:
-  Enable: false
+  Enable: true
   Directory: demonstrations
   MaxFiles: 0
   StrictActionCheck: true

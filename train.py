@@ -437,9 +437,9 @@ def world_model_imagine_data(replay_buffer: ReplayBuffer,
 def joint_train_world_model_agent(config, logdir,
                                   replay_buffer: ReplayBuffer,
                                   world_model: WorldModel, agent: agents.ActorCriticAgent,
-                                  logger):
+                                  logger,
+                                  demo_steps=0): # [수정] 데몬스트레이션 스텝 인자 추가
     os.makedirs(f"{logdir}/ckpt", exist_ok=True)
-
 
     vec_env = build_vector_env(config)
     num_envs = int(config.JointTrainAgent.NumEnvs)
@@ -457,10 +457,17 @@ def joint_train_world_model_agent(config, logdir,
     context_reward = deque(maxlen=config.JointTrainAgent.RealityContextLength)
     context_is_first = deque(maxlen=config.JointTrainAgent.RealityContextLength)
 
+    # [수정] 전체 샘플링해야 할 목표치에서 이미 수집된 데몬스트레이션 스텝 수를 차감합니다.
+    remaining_steps = max(0, config.JointTrainAgent.SampleMaxSteps - demo_steps)
+
     # sample and train
-    for total_steps in tqdm(range(config.JointTrainAgent.SampleMaxSteps // config.JointTrainAgent.NumEnvs), desc='Training'):
-        global_step = total_steps * num_envs
+    for total_steps in tqdm(range(remaining_steps // num_envs), desc='Training'):
+        # [수정] global_step은 0이 아니라 데몬스트레이션 스텝부터 시작합니다.
+        global_step = demo_steps + total_steps * num_envs
+        
+        # [이전 코드로 롤백] 복잡한 조건문 없이 ready() 플래그만으로 진행합니다.
         wm_ready = replay_buffer.ready('world_model')
+        
         # sample part >>>
         if wm_ready:
             world_model.eval()
@@ -777,12 +784,18 @@ if __name__ == "__main__":
     )
 
     try:
-        preload_play_demonstrations(config, replay_buffer, dummy_env)
+        # [수정] 반환되는 데몬스트레이션 스텝 수를 저장합니다.
+        demo_steps = preload_play_demonstrations(config, replay_buffer, dummy_env)
     finally:
         dummy_env.close()
 
-    # train
-    joint_train_world_model_agent(config, logdir, replay_buffer, world_model, agent, logger)
+    # [수정] 데몬스트레이션 스텝을 환경 개수(num_envs)의 배수로 보정합니다.
+    # (global_step % TrainEverySteps == 0 연산이 어긋나서 학습이 멈추는 치명적인 버그 방지)
+    num_envs = int(config.JointTrainAgent.NumEnvs)
+    demo_steps = (demo_steps // num_envs) * num_envs
+
+    # train (인자에 demo_steps 전달)
+    joint_train_world_model_agent(config, logdir, replay_buffer, world_model, agent, logger, demo_steps=demo_steps)
 
     logger.close()
 
