@@ -459,10 +459,32 @@ class WorldModel(nn.Module):
             self.optimizer = torch.optim.AdamW(self.parameters(), lr=config.Models.WorldModel.Adam.LearningRate, weight_decay=config.Models.WorldModel.Weight_decay)
         else:
             raise ValueError(f"Unknown optimiser: {config.Models.WorldModel.Optimiser}")
-        # self.optimizer = AGC(self.parameters(), self.optimizer)
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda step: 1.0)
         self.warmup_scheduler = LinearWarmup(self.optimizer, warmup_period=config.Models.WorldModel.Warmup_steps)
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp and config.Models.WorldModel.dtype is not torch.bfloat16)
+
+    # [추가] MIMO 처리를 위한 패딩 헬퍼 함수
+    def _pad_for_mimo(self, mamba_input, is_first=None):
+        orig_seqlen = None
+        if self.is_mimo and isinstance(mamba_input, dict):
+            S = mamba_input['latent'].shape[1]
+            rem = S % self.mimo_chunk_size
+            if rem != 0:
+                orig_seqlen = S
+                pad_len = self.mimo_chunk_size - rem
+                padded_input = {}
+                for k, v in mamba_input.items():
+                    pad_tensor = torch.zeros((v.shape[0], pad_len, v.shape[2]), dtype=v.dtype, device=v.device)
+                    padded_input[k] = torch.cat([v, pad_tensor], dim=1)
+                mamba_input = padded_input
+                if is_first is not None:
+                    if is_first.dim() == 2:
+                        pad_first = torch.zeros((is_first.shape[0], pad_len), dtype=is_first.dtype, device=is_first.device)
+                    else:
+                        pad_first = torch.zeros((is_first.shape[0], pad_len, is_first.shape[2]), dtype=is_first.dtype, device=is_first.device)
+                    is_first = torch.cat([is_first, pad_first], dim=1)
+        return mamba_input, is_first, orig_seqlen
+
     @profile
     def encode_obs(self, obs):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
@@ -472,11 +494,8 @@ class WorldModel(nn.Module):
             flattened_sample = self.flatten_sample(sample)
         return flattened_sample
     
-    # [추가] Mamba 입력 생성 헬퍼 함수
     def _prepare_mamba_input(self, latent, action, r=None):
-        # action 원-핫 인코딩
         action_onehot = F.one_hot(action.long(), self.sequence_model.config.action_dim).float().to(latent.dtype)
-        # r이 주어지지 않은 경우 영벡터로 채움 (예: 처음 상태)
         if r is None:
             r = torch.zeros(latent.shape[0], latent.shape[1], self.r_dim, device=latent.device, dtype=latent.dtype)
         else:
@@ -487,18 +506,15 @@ class WorldModel(nn.Module):
                 "action": action_onehot,
                 "reward": r,
             }
-        # non-MIMO path keeps concatenation for Mamba/Mamba2
         return torch.cat([latent, action_onehot, r], dim=-1)
     
     @profile
-    # [수정] r=None 매개변수 추가
     def calc_last_dist_feat(self, latent, action, inference_params=None, r=None, is_first=None):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             if self.model == 'Transformer':
                 temporal_mask = get_subsequent_mask(latent)
                 dist_feat = self.sequence_model(latent, action, temporal_mask, is_first=is_first)
             else:
-                # [수정] 진짜 보상을 Two-hot 인코딩하고 시간축으로 Shift하여 r_{t-1} 형태로 Mamba에 주입
                 if r is not None:
                     r_twohot = self.symlog_twohot_loss_func.encode(r).to(latent.dtype)
                     r_shifted = torch.zeros_like(r_twohot)
@@ -507,15 +523,18 @@ class WorldModel(nn.Module):
                     r_shifted = None
                     
                 mamba_input = self._prepare_mamba_input(latent, action, r_shifted)
-                dist_feat = self.sequence_model(mamba_input, inference_params=inference_params, is_first=is_first)
+                mamba_input, is_first_pad, orig_seqlen = self._pad_for_mimo(mamba_input, is_first)
+                dist_feat = self.sequence_model(mamba_input, inference_params=inference_params, is_first=is_first_pad)
+                if orig_seqlen is not None:
+                    dist_feat = dist_feat[:, :orig_seqlen]
                 
             last_dist_feat = dist_feat[:, -1:]
             prior_logits = self.dist_head.forward_prior(last_dist_feat)
             prior_sample = self.stright_throught_gradient(prior_logits, sample_mode="random_sample")
             prior_flattened_sample = self.flatten_sample(prior_sample)
         return prior_flattened_sample, last_dist_feat
+
     @profile
-    # 얘는 아직 _prepare_mamba_input 전처리 안 함. 나중에 쓰이면 넣자.
     def calc_last_post_feat(self, latent, action, current_obs, inference_params=None):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             embedding = self.encoder(current_obs)
@@ -527,7 +546,11 @@ class WorldModel(nn.Module):
                 dist_feat = self.sequence_model(latent, action, temporal_mask)
             else:
                 mamba_input = self._prepare_mamba_input(latent, action, r=None) 
+                mamba_input, _, orig_seqlen = self._pad_for_mimo(mamba_input, None)
                 dist_feat = self.sequence_model(mamba_input, inference_params=inference_params)
+                if orig_seqlen is not None:
+                    dist_feat = dist_feat[:, :orig_seqlen]
+
             last_dist_feat = dist_feat[:, -1:]
             shifted_feat = last_dist_feat
             x = torch.cat((shifted_feat, flattened_sample), -1)
@@ -538,20 +561,21 @@ class WorldModel(nn.Module):
             post_flattened_sample = self.flatten_sample(post_sample)            
 
         return post_flattened_sample, post_feat    
+
     @profile
-    # only called when using Transformer
     def predict_next(self, last_flattened_sample, action, log_video=True, r=None, is_first=None):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             if self.model == 'Transformer':
                 dist_feat = self.sequence_model.forward_with_kv_cache(last_flattened_sample, action, is_first=is_first)
             else:
-                # [수정] r을 함께 병합하여 전달
                 mamba_input = self._prepare_mamba_input(last_flattened_sample, action, r)
-                dist_feat = self.sequence_model(mamba_input, is_first=is_first)
+                mamba_input, is_first_pad, orig_seqlen = self._pad_for_mimo(mamba_input, is_first)
+                dist_feat = self.sequence_model(mamba_input, is_first=is_first_pad)
+                if orig_seqlen is not None:
+                    dist_feat = dist_feat[:, :orig_seqlen]
                 
             prior_logits = self.dist_head.forward_prior(dist_feat)
 
-            # decoding
             prior_sample = self.stright_throught_gradient(prior_logits, sample_mode="random_sample")
             prior_flattened_sample = self.flatten_sample(prior_sample)
             if log_video:
@@ -561,30 +585,23 @@ class WorldModel(nn.Module):
             reward_logits = self.reward_decoder(dist_feat)
             reward_hat = self.symlog_twohot_loss_func.decode(reward_logits)
             
-            # 다음 스텝 Mamba의 r 인자로 넘겨줄 미분 가능한 확률 벡터
             reward_probs = F.softmax(reward_logits, dim=-1)
             
             termination_hat = self.termination_decoder(dist_feat)
             termination_hat = termination_hat > 0
 
-        # 반환값에 reward_probs 추가
         return obs_hat, reward_hat, reward_probs, termination_hat, prior_flattened_sample, dist_feat
+
     @profile
     def stright_throught_gradient(self, logits, sample_mode="random_sample"):
         dist = OneHotCategorical(logits=logits)
-        # dist = Independent(
-        #     OneHotDist(logits), 1
-        # )        
         if sample_mode == "random_sample":
             sample = dist.sample() + dist.probs - dist.probs.detach()
-            # sample = dist.sample()
         elif sample_mode == "mode":
             sample = dist.mode
-            # sample = dist.mode()
         elif sample_mode == "probs":
             sample = dist.probs
         return sample
-    
     
     def flatten_sample(self, sample):
         return rearrange(sample, "B L K C -> B L (K C)")
@@ -645,10 +662,6 @@ class WorldModel(nn.Module):
         return loss, acc
 
     def init_imagine_buffer(self, imagine_batch_size, imagine_batch_length, dtype, device):
-        '''
-        This can slightly improve the efficiency of imagine_data
-        But may vary across different machines
-        '''
         if self.imagine_batch_size != imagine_batch_size or self.imagine_batch_length != imagine_batch_length:
             print(f"init_imagine_buffer: {imagine_batch_size}x{imagine_batch_length}@{dtype}")
             self.imagine_batch_size = imagine_batch_size
@@ -661,8 +674,8 @@ class WorldModel(nn.Module):
             self.action_buffer = torch.zeros(scalar_size, dtype=dtype, device=device)
             self.reward_hat_buffer = torch.zeros(scalar_size, dtype=dtype, device=device)
             self.termination_hat_buffer = torch.zeros(scalar_size, dtype=dtype, device=device)
+
     @profile
-    #transformer도 첫 번째 루프에서는 reward를 예측하는 게 아니라 받아오는 식으로 수정해야 함. 지금은 살짝 혼종 상태.
     def imagine_data(self, agent: agents.ActorCriticAgent, sample_obs, sample_action, sample_is_first,
                      imagine_batch_size, imagine_batch_length, log_video, logger, global_step):
 
@@ -671,14 +684,10 @@ class WorldModel(nn.Module):
             self.sequence_model.reset_kv_cache_list(imagine_batch_size, dtype=self.tensor_dtype)
         obs_hat_list = []
             
-        # context
         context_latent = self.encode_obs(sample_obs)
-        
-        # 첫 번째 스텝을 위한 초기 r 설정 (0으로 초기화)
         last_r_encoded = torch.zeros(imagine_batch_size, 1, 255, dtype=self.tensor_dtype, device=self.device)
 
-        # 1. 첫 번째 루프 (Context 처리)
-        for i in range(sample_obs.shape[1]):  # context_length is sample_obs.shape[1]
+        for i in range(sample_obs.shape[1]):
             last_obs_hat, last_reward_hat, last_reward_probs, last_termination_hat, last_latent, last_dist_feat = self.predict_next(
                 context_latent[:, i:i+1],
                 sample_action[:, i:i+1],
@@ -686,13 +695,11 @@ class WorldModel(nn.Module):
                 r=last_r_encoded,
                 is_first=sample_is_first[:, i:i+1]
             )
-            # [수정됨] 예측된 보상 확률 분포를 다음 스텝의 r_{t-1}로 업데이트
             last_r_encoded = last_reward_probs.to(self.tensor_dtype)
 
         self.sample_buffer[:, 0:1] = last_latent
         self.dist_feat_buffer[:, 0:1] = last_dist_feat
 
-        # 2. 두 번째 루프 (Imagine 생성)
         for i in range(imagine_batch_length):
             action, _ = agent.sample(torch.cat([self.sample_buffer[:, i:i+1], self.dist_feat_buffer[:, i:i+1]], dim=-1))
             self.action_buffer[:, i:i+1] = action
@@ -704,12 +711,10 @@ class WorldModel(nn.Module):
             self.dist_feat_buffer[:, i+1:i+2] = last_dist_feat
             self.reward_hat_buffer[:, i:i+1] = last_reward_hat
             self.termination_hat_buffer[:, i:i+1] = last_termination_hat
-            
-            # [수정됨] 예측된 보상 확률 분포를 다음 스텝의 r_{t-1}로 업데이트
             last_r_encoded = last_reward_probs.to(self.tensor_dtype)
 
             if log_video:
-                obs_hat_list.append(last_obs_hat[::imagine_batch_size//4] * 255)  # uniform sample vec_env
+                obs_hat_list.append(last_obs_hat[::imagine_batch_size//4] * 255)
 
         if log_video:    
             img_frames = torch.clamp(torch.cat(obs_hat_list, dim=1), 0, 255)
@@ -723,13 +728,10 @@ class WorldModel(nn.Module):
     def imagine_data2(self, agent: agents.ActorCriticAgent, sample_obs, sample_action, sample_reward, sample_is_first,
                      imagine_batch_size, imagine_batch_length, log_video, logger, global_step):
         self.init_imagine_buffer(imagine_batch_size, imagine_batch_length, dtype=self.tensor_dtype, device=self.device)
-        # context
         context_latent = self.encode_obs(sample_obs)
         batch_size, seqlen_og, embedding_dim = context_latent.shape
         max_length = imagine_batch_length + seqlen_og
 
-        # Mamba3 decode step relies on optional Cute kernels. If unavailable,
-        # fall back to full-sequence forward passes without inference cache.
         use_incremental_decode = not (self.model == 'Mamba3' and not self.mamba3_step_available)
         use_cg_decode = self.use_cg and use_incremental_decode
         incremental_decode_disabled_reason = None
@@ -755,9 +757,6 @@ class WorldModel(nn.Module):
             )
             self._warned_missing_mamba3_step = True
         
-        # ------------------------------------------------------------------
-        # [수정 1] Mamba 입력 차원 계산 (MIMO 사용 시 stem 이후 차원)
-        # ------------------------------------------------------------------
         action_dim = self.sequence_model.config.action_dim
         mamba_input_dim = self.hidden_state_dim if self.is_mimo else (self.stoch_flattened_dim + action_dim + 255)
 
@@ -771,7 +770,7 @@ class WorldModel(nn.Module):
                 imagine_batch_size,
                 seqlen_og,
                 max_length,
-                mamba_input_dim, # [수정 2] embedding_dim 대신 확장된 mamba_input_dim 사용
+                mamba_input_dim,
                 dtype=cache_dtype,
             )
             inference_params = self.sequence_model._decoding_cache.inference_params
@@ -781,24 +780,28 @@ class WorldModel(nn.Module):
         else:
             inference_params = None
 
-        # ------------------------------------------------------------------
-        # [수정 3] get_hidden_state가 단일 텐서(mamba_input)만 받도록 서명 수정
-        # ------------------------------------------------------------------
         def get_hidden_state(mamba_input, inference_params, is_first=None):
+            mamba_input, is_first_pad, orig_seqlen = self._pad_for_mimo(mamba_input, is_first)
+            
             if inference_params is None:
-                return self.sequence_model(mamba_input, is_first=is_first)
-            decoding = inference_params.seqlen_offset > 0
-            has_reset = is_first is not None and bool(torch.any(is_first > 0.5))
-            if not use_cg_decode or not decoding or has_reset:
-                hidden_state = self.sequence_model(
-                    mamba_input, 
-                    inference_params=inference_params,
-                    is_first=is_first,
-                )
+                hidden_state = self.sequence_model(mamba_input, is_first=is_first_pad)
             else:
-                hidden_state = self.sequence_model._decoding_cache.run(
-                    mamba_input, inference_params.seqlen_offset
-                )
+                decoding = inference_params.seqlen_offset > 0
+                has_reset = is_first_pad is not None and bool(torch.any(is_first_pad > 0.5))
+                if not use_cg_decode or not decoding or has_reset:
+                    hidden_state = self.sequence_model(
+                        mamba_input, 
+                        inference_params=inference_params,
+                        is_first=is_first_pad,
+                    )
+                else:
+                    hidden_state = self.sequence_model._decoding_cache.run(
+                        mamba_input, inference_params.seqlen_offset
+                    )
+            
+            if orig_seqlen is not None:
+                hidden_state = hidden_state[:, :orig_seqlen]
+                
             return hidden_state        
 
         def should_stop(step_idx, inference_params):
@@ -811,16 +814,10 @@ class WorldModel(nn.Module):
             return False
 
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
-            # 1. 실제 보상을 255차원 Two-hot으로 변환
             r_twohot = self.symlog_twohot_loss_func.encode(sample_reward).to(self.tensor_dtype)
-            
-            # 2. t-1 시점을 참조하기 위해 텐서를 우측으로 한 칸 Shift
             context_r = torch.zeros_like(r_twohot)
             context_r[:, 1:, :] = r_twohot[:, :-1, :]
             
-            # ------------------------------------------------------------------
-            # [수정 4] Context 병렬 처리 시 단일 mamba_input 생성 후 전달
-            # ------------------------------------------------------------------
             context_mamba_input = self._prepare_mamba_input(context_latent, sample_action, context_r)
             context_dist_feat = get_hidden_state(context_mamba_input, inference_params, is_first=sample_is_first)
             
@@ -839,21 +836,15 @@ class WorldModel(nn.Module):
             action_list, old_logits_list = [], []
             i = 0
             
-            # 상상(Imagine) 루프 시작 전, 진짜 보상 궤적을 토대로 형성된 
-            # 마지막 Context 스텝의 은닉 상태로 보상을 예측하여 넘겨줌
             context_last_reward_logits = self.reward_decoder(context_dist_feat[:, -1:])
             last_r_encoded = F.softmax(context_last_reward_logits, dim=-1).to(self.tensor_dtype)
 
-            # 자가회귀(Autoregressive) 상상 루프
             while not should_stop(i, inference_params):
                 action, logits = agent.sample(torch.cat([self.sample_buffer[:, i:i+1], self.dist_feat_buffer[:, i:i+1]], dim=-1))
                 action_list.append(action)
                 self.action_buffer[:, i:i+1] = action
                 old_logits_list.append(logits)
                 
-                # ------------------------------------------------------------------
-                # [수정 5] Imagine 스텝 루프 내에서도 단일 mamba_input 생성 후 전달
-                # ------------------------------------------------------------------
                 step_mamba_input = self._prepare_mamba_input(sample_list[-1], action_list[-1], last_r_encoded)
                 if inference_params is None:
                     if isinstance(running_mamba_input, dict):
@@ -886,10 +877,6 @@ class WorldModel(nn.Module):
                 self.sample_buffer[:, i+1:i+2] = prior_flattened_sample
                 i += 1
                     
-                        
-            # sample_tensor = torch.cat(sample_list, dim=1)
-            # dist_feat_tensor = torch.cat(dist_feat_list, dim=1)
-            # action_tensor = torch.cat(action_list, dim=1)
             old_logits_tensor = torch.cat(old_logits_list, dim=1)
 
             reward_hat_tensor = self.reward_decoder(self.dist_feat_buffer[:,:-1])
@@ -906,39 +893,35 @@ class WorldModel(nn.Module):
                 logger.log("Imagine/predict_video", img_frames, global_step=global_step)
         return torch.cat([self.sample_buffer, self.dist_feat_buffer], dim=-1), self.action_buffer, old_logits_tensor, torch.cat([context_flattened_sample, context_dist_feat], dim=-1), self.reward_hat_buffer, self.termination_hat_buffer
 
-
     @profile
-    def update(self, obs, action, reward, termination, is_first, global_step, epoch_step, logger=None, grad_accum_steps=1, do_step=True, zero_grad=False):
+    def update(self, obs, action, reward, termination, is_first, global_step, epoch_step, logger=None, grad_accum_steps=1, do_step=True, zero_grad=False, reward_mean=0.0, reward_std=1e-5):
         self.train()
         if zero_grad:
             self.optimizer.zero_grad(set_to_none=True)
         batch_size, batch_length = obs.shape[:2]
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
-            # encoding
             embedding = self.encoder(obs)
             post_logits = self.dist_head.forward_post(embedding)
             sample = self.stright_throught_gradient(post_logits, sample_mode="random_sample")
             flattened_sample = self.flatten_sample(sample)
 
-            # decoding image
             obs_hat = self.image_decoder(flattened_sample)
 
-            # ---------------------------------------------------------
-            # [NEW] Selection Mechanism을 위한 Reward 인코딩 및 Shift 적용
-            # ---------------------------------------------------------
             r_twohot = self.symlog_twohot_loss_func.encode(reward).to(flattened_sample.dtype)
             r_shifted = torch.zeros_like(r_twohot)
             r_shifted[:, 1:, :] = r_twohot[:, :-1, :]
             is_first = is_first.to(device=flattened_sample.device, dtype=flattened_sample.dtype)
-            # ---------------------------------------------------------
 
-            # dynamics models
             if self.model == 'Transformer':
                 temporal_mask = get_subsequent_mask_with_batch_length(batch_length, flattened_sample.device)
                 dist_feat = self.sequence_model(flattened_sample, action, temporal_mask, is_first=is_first)
             else:
                 mamba_input = self._prepare_mamba_input(flattened_sample, action, r_shifted)
-                dist_feat = self.sequence_model(mamba_input, is_first=is_first)
+                mamba_input, is_first_pad, orig_seqlen = self._pad_for_mimo(mamba_input, is_first)
+                dist_feat = self.sequence_model(mamba_input, is_first=is_first_pad)
+                if orig_seqlen is not None:
+                    dist_feat = dist_feat[:, :orig_seqlen]
+                    
             prior_logits = self.dist_head.forward_prior(dist_feat)
             prior_sample = self.stright_throught_gradient(prior_logits, sample_mode="random_sample")
             prior_flattened_sample = self.flatten_sample(prior_sample)
@@ -952,14 +935,10 @@ class WorldModel(nn.Module):
                 sample_aug = self.stright_throught_gradient(post_logits_aug, sample_mode="random_sample")
                 flattened_sample_aug = self.flatten_sample(sample_aug)
 
-                # prior_flattened_sample[:, t] is a one-step latent prediction (toward t+1),
-                # because dynamics KL already aligns prior[:, :-1] with posterior[:, 1:].
                 prior_feature = torch.cat([prior_flattened_sample, dist_feat], dim=-1)
                 action_onehot = F.one_hot(action.long(), self.action_dim).to(prior_feature.dtype)
 
                 valid_steps = 0
-                # t=0: predict z_{t+1} from prior at t (no extra action concat).
-                # t>0: predict farther future z_{t+1+t} using actions a_{t+1:t+t}.
                 max_steps = min(self.contrastive_steps, max(0, batch_length - 1))
                 for t in range(max_steps):
                     if t == 0:
@@ -990,26 +969,24 @@ class WorldModel(nn.Module):
                 latent=flattened_sample,
                 reward=reward,
                 encode_fn=self.encode_obs,
+                reward_mean=reward_mean,
+                reward_std=reward_std
             )
 
-            # decoding reward and termination with dist_feat
             reward_hat = self.reward_decoder(dist_feat)
             termination_hat = self.termination_decoder(dist_feat)
 
-            # env loss
             reconstruction_loss = self.mse_loss_func(obs_hat[:batch_size], obs[:batch_size])
             reward_loss = self.symlog_twohot_loss_func(reward_hat, reward)
             termination_loss = self.bce_with_logits_loss_func(termination_hat, termination)
-            # dyn-rep loss
             dynamics_loss, dynamics_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:].detach(), prior_logits[:, :-1])
             representation_loss, representation_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:], prior_logits[:, :-1].detach())
             total_loss = reconstruction_loss + reward_loss + termination_loss + dynamics_loss + 0.1*representation_loss + contrastive_loss + important_hash_loss
 
-        # gradient descent
         loss_scale = 1.0 / max(1, int(grad_accum_steps))
         self.scaler.scale(total_loss * loss_scale).backward()
         if do_step:
-            self.scaler.unscale_(self.optimizer)  # for clip grad
+            self.scaler.unscale_(self.optimizer)  
             torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=self.max_grad_norm)
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -1017,17 +994,16 @@ class WorldModel(nn.Module):
             self.lr_scheduler.step()
             self.warmup_scheduler.dampen()
 
-        if do_step and (global_step + epoch_step) % self.save_every_steps == 0: # and global_step != 0:
+        if do_step and (global_step + epoch_step) % self.save_every_steps == 0: 
             sample_obs = torch.clamp(obs[:3, 0, :]*255, 0, 255).permute(0, 2, 3, 1).cpu().detach().float().numpy().astype(np.uint8)
             sample_obs_hat = torch.clamp(obs_hat[:3, 0, :]*255, 0, 255).permute(0, 2, 3, 1).cpu().detach().float().numpy().astype(np.uint8)
 
             concatenated_images = []
             for idx in range(3):
-                concatenated_image = np.concatenate((sample_obs[idx], sample_obs_hat[idx]), axis=0)  # Concatenate vertically
+                concatenated_image = np.concatenate((sample_obs[idx], sample_obs_hat[idx]), axis=0) 
                 concatenated_images.append(concatenated_image)
 
-            # Combine selected images into one image
-            final_image = np.concatenate(concatenated_images, axis=1)  # Concatenate horizontally
+            final_image = np.concatenate(concatenated_images, axis=1) 
             height, width, _ = final_image.shape
             scale_factor = 6
             final_image_resized = cv2.resize(final_image, (width * scale_factor, height * scale_factor), interpolation=cv2.INTER_NEAREST)
