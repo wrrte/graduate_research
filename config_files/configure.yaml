@@ -21,10 +21,10 @@ JointTrainAgent:
   BufferMaxLength: 100000
   WorldModelWarmUp: 1024
   BehaviourWarmUp: 1024
-  NumEnvs: 1
-  BatchSize: 16
+  NumEnvs: 8 # 1
+  BatchSize: 128 # 16
   BatchLength: 128
-  ImagineBatchSize: 1024
+  ImagineBatchSize: 8192 # 1024
   ImagineContextLength: 8
   ImagineBatchLength: 16
   RealityContextLength: 16
@@ -89,7 +89,7 @@ Models:
     Adam:
       LearningRate: 1.0e-4
     Laprop:
-      LearningRate: 4.0e-5
+      LearningRate: 1.12e-4 # 4.0e-5
       Epsilon: 1.0e-20
     Encoder:
       Depth: 16
@@ -144,7 +144,7 @@ Models:
         LearningRate: 3.0e-5
         Epsilon: 1.0e-5
       Laprop:
-        LearningRate: 4.0e-5
+        LearningRate: 1.12e-4 # 4.0e-5
         Epsilon: 1.0e-20
       Actor:
         HiddenUnits: 256
@@ -168,7 +168,7 @@ Models:
         LearningRate: 3.e-5
         Epsilon: 1.0e-5
       Laprop:
-        LearningRate: 4.0e-5
+        LearningRate: 1.12e-4 # 4.0e-5
         Epsilon: 1.0e-20
       Actor:
         HiddenUnits: 256
