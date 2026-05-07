@@ -259,6 +259,18 @@ class WorldModel(nn.Module):
         self.imagine_batch_length = -1
         self.device = device # Maybe it's not needed
         self.model = config.Models.WorldModel.Backbone
+        mamba_ssm_cfg = getattr(config.Models.WorldModel.Mamba, "ssm_cfg", None)
+        if isinstance(mamba_ssm_cfg, dict):
+            is_mimo = bool(mamba_ssm_cfg.get("is_mimo", False))
+            mimo_rank = int(mamba_ssm_cfg.get("mimo_rank", 1))
+            mimo_chunk_size = int(mamba_ssm_cfg.get("chunk_size", 64))
+        else:
+            is_mimo = bool(getattr(mamba_ssm_cfg, "is_mimo", False)) if mamba_ssm_cfg is not None else False
+            mimo_rank = int(getattr(mamba_ssm_cfg, "mimo_rank", 1)) if mamba_ssm_cfg is not None else 1
+            mimo_chunk_size = int(getattr(mamba_ssm_cfg, "chunk_size", 64)) if mamba_ssm_cfg is not None else 64
+        self.is_mimo = bool(is_mimo) and self.model == "Mamba3"
+        self.mimo_rank = max(int(mimo_rank), 1)
+        self.mimo_chunk_size = int(mimo_chunk_size)
         self.r_dim = 255
         self.mamba3_step_available = True
         self.mamba3_step_unavailable_reason = None
@@ -337,7 +349,10 @@ class WorldModel(nn.Module):
                 dropout_p=config.Models.WorldModel.Dropout,
                 ssm_cfg={
                     'd_state': config.Models.WorldModel.Mamba.ssm_cfg.d_state, 
-                    'layer': 'Mamba3'}
+                    'layer': 'Mamba3',
+                    'is_mimo': self.is_mimo,
+                    'mimo_rank': self.mimo_rank,
+                    'chunk_size': self.mimo_chunk_size}
                 )
             self.sequence_model = MambaWrapperModel(mamba_config)                 
         else:
@@ -457,14 +472,22 @@ class WorldModel(nn.Module):
             flattened_sample = self.flatten_sample(sample)
         return flattened_sample
     
-    # [추가] Mamba 입력용 단일 텐서 생성 헬퍼 함수
+    # [추가] Mamba 입력 생성 헬퍼 함수
     def _prepare_mamba_input(self, latent, action, r=None):
         # action 원-핫 인코딩
         action_onehot = F.one_hot(action.long(), self.sequence_model.config.action_dim).float().to(latent.dtype)
         # r이 주어지지 않은 경우 영벡터로 채움 (예: 처음 상태)
         if r is None:
             r = torch.zeros(latent.shape[0], latent.shape[1], self.r_dim, device=latent.device, dtype=latent.dtype)
-        # latent(stoch_dim) + action(action_dim) + r(255) 병합
+        else:
+            r = r.to(dtype=latent.dtype, device=latent.device)
+        if self.is_mimo:
+            return {
+                "latent": latent,
+                "action": action_onehot,
+                "reward": r,
+            }
+        # non-MIMO path keeps concatenation for Mamba/Mamba2
         return torch.cat([latent, action_onehot, r], dim=-1)
     
     @profile
@@ -719,6 +742,11 @@ class WorldModel(nn.Module):
                     f"; import failed with {type(self.mamba3_step_import_error).__name__}: "
                     f"{self.mamba3_step_import_error}"
                 )
+        mimo_active = self.model == 'Mamba3' and self.is_mimo
+        if mimo_active:
+            use_incremental_decode = False
+            use_cg_decode = False
+            incremental_decode_disabled_reason = "MIMO input mode disables incremental decode"
         if not use_incremental_decode and not self._warned_missing_mamba3_step:
             reason = incremental_decode_disabled_reason or "unknown runtime condition"
             print(
@@ -728,10 +756,10 @@ class WorldModel(nn.Module):
             self._warned_missing_mamba3_step = True
         
         # ------------------------------------------------------------------
-        # [수정 1] Mamba에 실제로 들어갈 단일 텐서의 차원 계산 (latent + action + r)
+        # [수정 1] Mamba 입력 차원 계산 (MIMO 사용 시 stem 이후 차원)
         # ------------------------------------------------------------------
         action_dim = self.sequence_model.config.action_dim
-        mamba_input_dim = self.stoch_flattened_dim + action_dim + 255 
+        mamba_input_dim = self.hidden_state_dim if self.is_mimo else (self.stoch_flattened_dim + action_dim + 255)
 
         if use_cg_decode:
             if not hasattr(self.sequence_model, "_decoding_cache"):
@@ -828,7 +856,13 @@ class WorldModel(nn.Module):
                 # ------------------------------------------------------------------
                 step_mamba_input = self._prepare_mamba_input(sample_list[-1], action_list[-1], last_r_encoded)
                 if inference_params is None:
-                    running_mamba_input = torch.cat([running_mamba_input, step_mamba_input], dim=1)
+                    if isinstance(running_mamba_input, dict):
+                        running_mamba_input = {
+                            key: torch.cat([running_mamba_input[key], step_mamba_input[key]], dim=1)
+                            for key in running_mamba_input
+                        }
+                    else:
+                        running_mamba_input = torch.cat([running_mamba_input, step_mamba_input], dim=1)
                     running_is_first = torch.cat(
                         [running_is_first, torch.zeros((running_is_first.shape[0], 1), device=running_is_first.device, dtype=running_is_first.dtype)],
                         dim=1,

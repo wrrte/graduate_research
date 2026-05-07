@@ -45,7 +45,7 @@ Demonstration:
   Directory: demonstrations
   MaxFiles: 0
   StrictActionCheck: true
-  DemoRatio: 0.25  # 데모 데이터를 방어할 최소 보장 비율을 여기에 추가합니다.
+  DemoRatio: 0.2  # 데모 데이터를 방어할 최소 보장 비율을 여기에 추가합니다.
 
 Models:
   WorldModel:
@@ -120,6 +120,9 @@ Models:
       d_intermediate: 0
       ssm_cfg:
         d_state: 32 #d_state는 32, 64, 128 만 지원
+        is_mimo: true
+        mimo_rank: 4
+        chunk_size: 16
     
 
   Agent:

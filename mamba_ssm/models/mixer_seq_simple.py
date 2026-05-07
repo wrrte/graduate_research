@@ -188,19 +188,41 @@ class MixerModel(nn.Module):
         self.residual_in_fp32 = residual_in_fp32
 
         self.action_dim = action_dim
+        self.stoch_dim = stoch_dim
+        self.r_dim = r_dim
         self.feat_dim = d_model
+        self.is_mimo = bool(ssm_cfg.get("is_mimo", False)) if ssm_cfg is not None else False
+        self.mimo_rank = int(ssm_cfg.get("mimo_rank", 1)) if ssm_cfg is not None else 1
+        if self.is_mimo and self.mimo_rank < 3:
+            raise ValueError(f"mimo_rank must be >= 3 for latent/action/reward, got {self.mimo_rank}")
 
         # self.embedding = nn.Embedding(vocab_size, d_model, **factory_kwargs)
 
-        # [수정] stem 레이어의 입력 차원을 (latent + action + r)로 확장
-        in_channels = stoch_dim + action_dim + r_dim
-        self.stem = nn.Sequential(
-            nn.Linear(in_channels, d_model, bias=True, **factory_kwargs),
-            RMSNorm(d_model, eps=norm_epsilon, **factory_kwargs),
-            nn.SiLU(),
-            # nn.Linear(stoch_dim+action_dim, d_model, bias=True, **factory_kwargs),
-            # nn.modules.normalization.RMSNorm(d_model, **factory_kwargs),
-        )
+        if self.is_mimo:
+            self.stem_latent = nn.Sequential(
+                nn.Linear(stoch_dim, d_model, bias=True, **factory_kwargs),
+                RMSNorm(d_model, eps=norm_epsilon, **factory_kwargs),
+                nn.SiLU(),
+            )
+            self.stem_action = nn.Sequential(
+                nn.Linear(action_dim, d_model, bias=True, **factory_kwargs),
+                RMSNorm(d_model, eps=norm_epsilon, **factory_kwargs),
+                nn.SiLU(),
+            )
+            self.stem_reward = nn.Sequential(
+                nn.Linear(r_dim, d_model, bias=True, **factory_kwargs),
+                RMSNorm(d_model, eps=norm_epsilon, **factory_kwargs),
+                nn.SiLU(),
+            )
+            self.rank_fuse = nn.Parameter(torch.zeros(self.mimo_rank, **factory_kwargs))
+        else:
+            # stem 레이어의 입력 차원을 (latent + action + r)로 확장
+            in_channels = stoch_dim + action_dim + r_dim
+            self.stem = nn.Sequential(
+                nn.Linear(in_channels, d_model, bias=True, **factory_kwargs),
+                RMSNorm(d_model, eps=norm_epsilon, **factory_kwargs),
+                nn.SiLU(),
+            )
      
         # We change the order of residual and layer norm:
         # Instead of LN -> Attn / MLP -> Add, we do:
@@ -240,6 +262,10 @@ class MixerModel(nn.Module):
             "seq_idx" in inspect.signature(layer.mixer.forward).parameters
             for layer in self.layers
         )
+        self._supports_mimo_inputs = all(
+            "mimo_inputs" in inspect.signature(layer.mixer.forward).parameters
+            for layer in self.layers
+        )
 
         self.norm_f = (nn.LayerNorm if not rms_norm else RMSNorm)(
             d_model, eps=norm_epsilon, **factory_kwargs
@@ -261,8 +287,27 @@ class MixerModel(nn.Module):
         }
 
     def _forward_no_reset(self, mamba_input, inference_params=None, **mixer_kwargs):
-        # action = F.one_hot(action.long(), self.action_dim).float()
-        hidden_states = self.stem(mamba_input)
+        if self.is_mimo:
+            if not isinstance(mamba_input, dict):
+                raise ValueError("MIMO mode expects mamba_input to be a dict with latent/action/reward")
+            latent = mamba_input["latent"]
+            action = mamba_input["action"]
+            reward = mamba_input["reward"]
+            latent_feat = self.stem_latent(latent)
+            action_feat = self.stem_action(action)
+            reward_feat = self.stem_reward(reward)
+            rank_inputs = [latent_feat, action_feat, reward_feat]
+            if self.mimo_rank > len(rank_inputs):
+                pad_count = self.mimo_rank - len(rank_inputs)
+                for _ in range(pad_count):
+                    rank_inputs.append(torch.zeros_like(latent_feat))
+            rank_inputs = torch.stack(rank_inputs[: self.mimo_rank], dim=2)
+            rank_weights = torch.softmax(self.rank_fuse, dim=0).to(dtype=rank_inputs.dtype)
+            hidden_states = torch.sum(rank_inputs * rank_weights.view(1, 1, -1, 1), dim=2)
+            if self._supports_mimo_inputs:
+                mixer_kwargs = {**mixer_kwargs, "mimo_inputs": rank_inputs}
+        else:
+            hidden_states = self.stem(mamba_input)
             
         residual = None
         for layer in self.layers:
@@ -287,6 +332,12 @@ class MixerModel(nn.Module):
                 dropout_p=self.dropout_p if self.training else 0.0
             )
         return hidden_states
+
+    @staticmethod
+    def _slice_mamba_input(mamba_input, batch_slice, time_slice):
+        if isinstance(mamba_input, dict):
+            return {key: value[batch_slice, time_slice] for key, value in mamba_input.items()}
+        return mamba_input[batch_slice, time_slice]
 
     @staticmethod
     def _format_is_first(is_first, batch_size, seq_len, device):
@@ -346,7 +397,11 @@ class MixerModel(nn.Module):
             inference_params.lengths_per_sample[reset_mask] = 0
 
     def _forward_segmented(self, mamba_input, is_first_mask, **mixer_kwargs):
-        batch_size, seq_len = mamba_input.shape[:2]
+        if isinstance(mamba_input, dict):
+            sample = next(iter(mamba_input.values()))
+            batch_size, seq_len = sample.shape[:2]
+        else:
+            batch_size, seq_len = mamba_input.shape[:2]
         outputs = []
 
         for batch_idx in range(batch_size):
@@ -359,7 +414,7 @@ class MixerModel(nn.Module):
                 end = starts[i + 1] if i + 1 < len(starts) else seq_len
                 segment_outputs.append(
                     self._forward_no_reset(
-                        mamba_input[batch_idx:batch_idx + 1, start:end],
+                        self._slice_mamba_input(mamba_input, slice(batch_idx, batch_idx + 1), slice(start, end)),
                         inference_params=None,
                         **mixer_kwargs,
                     )
@@ -370,7 +425,11 @@ class MixerModel(nn.Module):
         return torch.cat(outputs, dim=0)
 
     def _forward_with_inference_reset(self, mamba_input, inference_params, is_first_mask, **mixer_kwargs):
-        seq_len = mamba_input.shape[1]
+        if isinstance(mamba_input, dict):
+            sample = next(iter(mamba_input.values()))
+            seq_len = sample.shape[1]
+        else:
+            seq_len = mamba_input.shape[1]
         start_offset = inference_params.seqlen_offset
         outputs = []
 
@@ -381,7 +440,7 @@ class MixerModel(nn.Module):
 
             outputs.append(
                 self._forward_no_reset(
-                    mamba_input[:, t:t + 1],
+                    self._slice_mamba_input(mamba_input, slice(None), slice(t, t + 1)),
                     inference_params=inference_params,
                     **mixer_kwargs,
                 )
@@ -392,11 +451,18 @@ class MixerModel(nn.Module):
         return torch.cat(outputs, dim=1)
 
     def forward(self, mamba_input, inference_params=None, is_first=None, **mixer_kwargs):
+        if isinstance(mamba_input, dict):
+            sample = next(iter(mamba_input.values()))
+            batch_size, seq_len = sample.shape[:2]
+            device = sample.device
+        else:
+            batch_size, seq_len = mamba_input.shape[:2]
+            device = mamba_input.device
         is_first_mask = self._format_is_first(
             is_first,
-            batch_size=mamba_input.shape[0],
-            seq_len=mamba_input.shape[1],
-            device=mamba_input.device,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=device,
         )
 
         if is_first_mask is None or not bool(torch.any(is_first_mask)):

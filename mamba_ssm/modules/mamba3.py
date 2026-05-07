@@ -135,12 +135,23 @@ class Mamba3(nn.Module):
         self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=False, **factory_kwargs)
 
 
-    def forward(self, u, seq_idx=None, cu_seqlens=None, inference_params=None):
+    def forward(self, u, seq_idx=None, cu_seqlens=None, inference_params=None, mimo_inputs=None):
         """
         u: (batch, seqlen, hidden_dim)
         Returns: same shape as u
         """
         batch, seqlen, dim = u.shape
+        if mimo_inputs is not None:
+            if not self.is_mimo:
+                raise ValueError("mimo_inputs provided but is_mimo is False")
+            if mimo_inputs.dim() != 4:
+                raise ValueError(f"mimo_inputs must be 4D (B,L,R,D), got {mimo_inputs.dim()}D")
+            if mimo_inputs.shape[2] != self.mimo_rank:
+                raise ValueError(
+                    f"mimo_inputs rank mismatch: expected {self.mimo_rank}, got {mimo_inputs.shape[2]}"
+                )
+            if inference_params is not None and inference_params.seqlen_offset > 0:
+                raise ValueError("mimo_inputs is not supported with incremental decode; disable inference_params")
         if cu_seqlens is not None:
             raise NotImplementedError("Currently does not support varlen in Mamba-3 (MIMO).")
 
@@ -176,8 +187,36 @@ class Mamba3(nn.Module):
             dim=-1)
         z = rearrange(z, "b l (h p) -> b l h p", p=self.headdim)
         x = rearrange(x, "b l (h p) -> b l h p", p=self.headdim)
-        B = rearrange(B, "b l (r g n) -> b l r g n", r=self.mimo_rank, g=self.num_bc_heads)
-        C = rearrange(C, "b l (r g n) -> b l r g n", r=self.mimo_rank, g=self.num_bc_heads)
+        if mimo_inputs is not None:
+            rank_proj = self.in_proj(mimo_inputs)
+            _, _, B_rank, C_rank, _, _, _, _ = torch.split(
+                rank_proj,
+                [
+                    self.d_inner, self.d_inner,
+                    self.d_state * self.num_bc_heads * self.mimo_rank,
+                    self.d_state * self.num_bc_heads * self.mimo_rank,
+                    self.nheads, self.nheads, self.nheads,
+                    self.num_rope_angles,
+                ],
+                dim=-1,
+            )
+            B_rank = rearrange(
+                B_rank,
+                "b l r (r2 g n) -> b l r r2 g n",
+                r2=self.mimo_rank,
+                g=self.num_bc_heads,
+            )
+            C_rank = rearrange(
+                C_rank,
+                "b l r (r2 g n) -> b l r r2 g n",
+                r2=self.mimo_rank,
+                g=self.num_bc_heads,
+            )
+            B = torch.diagonal(B_rank, dim1=2, dim2=3).permute(0, 1, 4, 2, 3).contiguous()
+            C = torch.diagonal(C_rank, dim1=2, dim2=3).permute(0, 1, 4, 2, 3).contiguous()
+        else:
+            B = rearrange(B, "b l (r g n) -> b l r g n", r=self.mimo_rank, g=self.num_bc_heads)
+            C = rearrange(C, "b l (r g n) -> b l r g n", r=self.mimo_rank, g=self.num_bc_heads)
         trap = rearrange(trap, "b l h -> b h l")
 
         # Compute ADT, DT
