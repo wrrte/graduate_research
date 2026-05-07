@@ -463,13 +463,13 @@ def joint_train_world_model_agent(config, logdir,
 
     # === [수정] 오프라인 사전 학습 (Offline Pre-training) 구간 ===
     if demo_steps > 0:
-        # 데몬스트레이션 스텝 수를 학습 주기 단위로 환산하여 사전 학습 진행
-        pretrain_updates = demo_steps // config.JointTrainAgent.TrainDynamicsEverySteps
-        print(colorama.Fore.CYAN + f"\nStarting Offline Pre-training: {pretrain_updates} updates using demonstration data..." + colorama.Style.RESET_ALL)
+        # 데몬스트레이션 스텝 수를 학습 주기 단위로 환산하되, num_envs에 반비례하도록 나누어 사전 학습 비중을 보정
+        pretrain_updates = (demo_steps // num_envs) // config.JointTrainAgent.TrainDynamicsEverySteps
+        print(colorama.Fore.CYAN + f"\nStarting Offline Pre-training: {pretrain_updates} updates (scaled down by num_envs={num_envs}) using demonstration data..." + colorama.Style.RESET_ALL)
         
         for p_step in tqdm(range(pretrain_updates), desc='Pre-training (Offline)'):
-            # 로깅용 가상 스텝 (0부터 시작하여 demo_steps 직전까지 도달)
-            pseudo_global_step = p_step * config.JointTrainAgent.TrainDynamicsEverySteps
+            # 로깅용 가상 스텝 (온라인 수집 템포에 맞추어 num_envs 배율 적용)
+            pseudo_global_step = p_step * config.JointTrainAgent.TrainDynamicsEverySteps * num_envs
             
             # 1. World Model 사전 학습
             if replay_buffer.ready('world_model'):
@@ -490,7 +490,8 @@ def joint_train_world_model_agent(config, logdir,
                 )
 
             # 2. Behaviour Model 사전 학습
-            if replay_buffer.ready('behaviour') and pseudo_global_step % config.JointTrainAgent.TrainAgentEverySteps == 0:
+            # Agent 업데이트 조건도 스케일링을 반영하여 기존과 동일한 비율로 업데이트되도록 유지
+            if replay_buffer.ready('behaviour') and pseudo_global_step % (config.JointTrainAgent.TrainAgentEverySteps * num_envs) == 0:
                 imagine_latent, agent_action, old_logits, context_latent, imagined_context_reward, imagined_context_termination, imagine_reward, imagine_termination = world_model_imagine_data(
                     replay_buffer=replay_buffer,
                     world_model=world_model,
