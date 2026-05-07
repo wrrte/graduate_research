@@ -9,7 +9,10 @@ class ImportantInfoHashLoss(nn.Module):
         super().__init__()
         cfg = config or {}
         self.enabled = bool(cfg.get("Enable", False))
-        self.reward_threshold = float(cfg.get("RewardThreshold", 1.0))
+        
+        # 2 sigma 임계값으로 대체 적용
+        self.sigma_threshold = 2.0
+        
         self.hash_bits = int(cfg.get("HashBits", 12))
         self.max_queue_per_key = int(cfg.get("MaxQueuePerKey", 8))
         self.max_past_samples = int(cfg.get("MaxPastSamples", 4))
@@ -39,14 +42,14 @@ class ImportantInfoHashLoss(nn.Module):
         keys = (bits.to(torch.int64) * bit_values).sum(dim=-1)
         return keys.detach().cpu().tolist()
 
-    def _update_memory(self, obs, reward, latent):
+    def _update_memory(self, obs, reward, latent, reward_mean, reward_std):
         if not self.enabled:
             return
         if obs.numel() == 0:
             return
 
         if self.store_only_triggered:
-            store_mask = reward.abs() >= self.reward_threshold
+            store_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
         else:
             store_mask = torch.ones_like(reward, dtype=torch.bool)
 
@@ -71,15 +74,15 @@ class ImportantInfoHashLoss(nn.Module):
                 self.hash_memory[key] = queue
             queue.append((obs_item, float(reward_item)))
 
-    def forward(self, obs, latent, reward, encode_fn):
+    def forward(self, obs, latent, reward, encode_fn, reward_mean, reward_std):
         if not self.enabled:
             return latent.new_tensor(0.0)
         if obs.numel() == 0:
             return latent.new_tensor(0.0)
 
-        trigger_mask = reward.abs() >= self.reward_threshold
+        trigger_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
         if not torch.any(trigger_mask) or not self.hash_memory:
-            self._update_memory(obs, reward, latent)
+            self._update_memory(obs, reward, latent, reward_mean, reward_std)
             return latent.new_tensor(0.0)
 
         latent_trigger = latent[trigger_mask]
@@ -110,7 +113,7 @@ class ImportantInfoHashLoss(nn.Module):
                 break
 
         if pair_count == 0:
-            self._update_memory(obs, reward, latent)
+            self._update_memory(obs, reward, latent, reward_mean, reward_std)
             return latent.new_tensor(0.0)
 
         past_obs = torch.stack(past_obs_list, dim=0)
@@ -126,5 +129,5 @@ class ImportantInfoHashLoss(nn.Module):
         cosine_sim = F.cosine_similarity(curr_latent, past_latent, dim=-1, eps=1e-8)
         loss = (reward_diff * cosine_sim).mean() * self.loss_scale
 
-        self._update_memory(obs, reward, latent)
+        self._update_memory(obs, reward, latent, reward_mean, reward_std)
         return loss
