@@ -63,6 +63,8 @@ Models:
     Dropout: 0.1
     Unimix_ratio: 0.01
     Weight_decay: 1.0e-4
+    RewardConcat:
+      Enable: false
     Contrastive:
       Enable: false
       Steps: 5

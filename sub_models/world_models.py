@@ -259,6 +259,13 @@ class WorldModel(nn.Module):
         self.imagine_batch_length = -1
         self.device = device # Maybe it's not needed
         self.model = config.Models.WorldModel.Backbone
+        
+        # [추가] Reward Concat 토글 (yaml에 없으면 기본값 True)
+        self.enable_reward_concat = True
+        if hasattr(config.Models.WorldModel, 'RewardConcat'):
+            if hasattr(config.Models.WorldModel.RewardConcat, 'Enable'):
+                self.enable_reward_concat = bool(config.Models.WorldModel.RewardConcat.Enable)
+                
         mamba_ssm_cfg = getattr(config.Models.WorldModel.Mamba, "ssm_cfg", None)
         if isinstance(mamba_ssm_cfg, dict):
             is_mimo = bool(mamba_ssm_cfg.get("is_mimo", False))
@@ -463,7 +470,6 @@ class WorldModel(nn.Module):
         self.warmup_scheduler = LinearWarmup(self.optimizer, warmup_period=config.Models.WorldModel.Warmup_steps)
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp and config.Models.WorldModel.dtype is not torch.bfloat16)
 
-    # [추가] MIMO 처리를 위한 패딩 헬퍼 함수
     def _pad_for_mimo(self, mamba_input, is_first=None):
         orig_seqlen = None
         if self.is_mimo and isinstance(mamba_input, dict):
@@ -494,12 +500,16 @@ class WorldModel(nn.Module):
             flattened_sample = self.flatten_sample(sample)
         return flattened_sample
     
+    # [수정] Reward Concat 토글 (Zero-masking) 적용
     def _prepare_mamba_input(self, latent, action, r=None):
         action_onehot = F.one_hot(action.long(), self.sequence_model.config.action_dim).float().to(latent.dtype)
-        if r is None:
+        
+        # enable_reward_concat이 False이거나 r이 주어지지 않았다면 0 텐서로 덮어씌웁니다.
+        if not self.enable_reward_concat or r is None:
             r = torch.zeros(latent.shape[0], latent.shape[1], self.r_dim, device=latent.device, dtype=latent.dtype)
         else:
             r = r.to(dtype=latent.dtype, device=latent.device)
+            
         if self.is_mimo:
             return {
                 "latent": latent,
