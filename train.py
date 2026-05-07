@@ -339,6 +339,8 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
     micro_batch_size = min(int(micro_batch_size), int(batch_size))
     accum_steps = max(1, int(math.ceil(batch_size / micro_batch_size)))
 
+    reward_mean, reward_std = replay_buffer.get_reward_stats()
+
     for e in range(epoch):
         for micro_step in range(accum_steps):
             obs, action, reward, termination, is_first = replay_buffer.sample(
@@ -357,6 +359,8 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
                 grad_accum_steps=accum_steps,
                 do_step=do_step,
                 zero_grad=micro_step == 0,
+                reward_mean=reward_mean,
+                reward_std=reward_std
             )
 
             if len(outputs) == 11:

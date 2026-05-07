@@ -45,6 +45,11 @@ class ReplayBuffer():
         # [추가] configure.yaml에서 데모 보존 비율을 읽어옵니다. (설정이 없으면 기본값 0.25 사용)
         self.demo_ratio = getattr(config.Demonstration, 'DemoRatio', 0.25) if hasattr(config, 'Demonstration') else 0.25
 
+        # 보상 통계 (Welford's online algorithm)
+        self.reward_count = 0
+        self.reward_mean = 0.0
+        self.reward_M2 = 0.0
+
     def ready(self, model_name='world_model'):
         return self.length  > self.world_model_warmup_length if model_name == 'world_model' else self.length  > self.behaviour_warmup_length
 
@@ -219,6 +224,19 @@ class ReplayBuffer():
 
         if len(self) < self.max_length:
             self.length += 1
+
+        # Welford's online algorithm을 이용한 보상 통계 갱신
+        self.reward_count += 1
+        delta = float(reward) - self.reward_mean
+        self.reward_mean += delta / self.reward_count
+        delta2 = float(reward) - self.reward_mean
+        self.reward_M2 += delta * delta2
+
+    def get_reward_stats(self):
+        if self.reward_count < 2:
+            return self.reward_mean, 1e-8
+        variance = self.reward_M2 / (self.reward_count - 1)
+        return self.reward_mean, np.sqrt(variance) + 1e-8
 
     def __len__(self):
         return self.length
