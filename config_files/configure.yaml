@@ -21,6 +21,7 @@ JointTrainAgent:
   BufferMaxLength: 100000
   WorldModelWarmUp: 1024
   BehaviourWarmUp: 1024
+  SkipPretrain: True
   NumEnvs: 8 # 1
   BatchSize: 128 # 16
   BatchLength: 128

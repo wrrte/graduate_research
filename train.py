@@ -461,8 +461,11 @@ def joint_train_world_model_agent(config, logdir,
     context_reward = deque(maxlen=config.JointTrainAgent.RealityContextLength)
     context_is_first = deque(maxlen=config.JointTrainAgent.RealityContextLength)
 
-    # === [수정] 오프라인 사전 학습 (Offline Pre-training) 구간 ===
-    if demo_steps > 0:
+    # === [수정] 오프라인 사전 학습 (Offline Pre-training) 제어 로직 ===
+    # SkipPretrain 옵션 확인 (YAML에 없으면 기본값 False)
+    skip_pretrain = _get_nested_config(config, 'JointTrainAgent.SkipPretrain', False)
+
+    if demo_steps > 0 and not skip_pretrain:
         # 데몬스트레이션 스텝 수를 학습 주기 단위로 환산하되, num_envs에 반비례하도록 나누어 사전 학습 비중을 보정
         pretrain_updates = (demo_steps // num_envs) // config.JointTrainAgent.TrainDynamicsEverySteps
         print(colorama.Fore.CYAN + f"\nStarting Offline Pre-training: {pretrain_updates} updates (scaled down by num_envs={num_envs}) using demonstration data..." + colorama.Style.RESET_ALL)
@@ -490,7 +493,6 @@ def joint_train_world_model_agent(config, logdir,
                 )
 
             # 2. Behaviour Model 사전 학습
-            # Agent 업데이트 조건도 스케일링을 반영하여 기존과 동일한 비율로 업데이트되도록 유지
             if replay_buffer.ready('behaviour') and pseudo_global_step % (config.JointTrainAgent.TrainAgentEverySteps * num_envs) == 0:
                 imagine_latent, agent_action, old_logits, context_latent, imagined_context_reward, imagined_context_termination, imagine_reward, imagine_termination = world_model_imagine_data(
                     replay_buffer=replay_buffer,
@@ -499,7 +501,7 @@ def joint_train_world_model_agent(config, logdir,
                     imagine_batch_size=config.JointTrainAgent.ImagineBatchSize,
                     imagine_context_length=config.JointTrainAgent.ImagineContextLength,
                     imagine_batch_length=config.JointTrainAgent.ImagineBatchLength,
-                    log_video=False, # 훈련 속도를 위해 사전 학습 중 비디오 로깅은 생략
+                    log_video=False, 
                     logger=logger,
                     global_step=pseudo_global_step
                 )
@@ -517,6 +519,8 @@ def joint_train_world_model_agent(config, logdir,
                     global_step=pseudo_global_step
                 )
         print(colorama.Fore.GREEN + "Offline Pre-training Complete!\n" + colorama.Style.RESET_ALL)
+    elif skip_pretrain:
+        print(colorama.Fore.YELLOW + "SkipPretrain is True. Demonstration data is loaded but Offline Pre-training is skipped." + colorama.Style.RESET_ALL)
     # =========================================================
 
     remaining_steps = max(0, config.JointTrainAgent.SampleMaxSteps - demo_steps)
