@@ -19,10 +19,10 @@ Evaluate:
 JointTrainAgent:
   SampleMaxSteps: 105000 # Just to make sure the last episode will finish, no training after 100k
   BufferMaxLength: 100000
-  WorldModelWarmUp: 1024
-  BehaviourWarmUp: 1024
+  WorldModelWarmUp: 16384 # 1024
+  BehaviourWarmUp: 16384 # 1024
   SkipPretrain: True
-  NumEnvs: 8 # 1
+  NumEnvs: 1 # 1
   BatchSize: 128 # 16
   BatchLength: 128
   ImagineBatchSize: 8192 # 1024
@@ -42,7 +42,7 @@ JointTrainAgent:
   Beta: 1.0 # High focus on penalising 
 
 Demonstration:
-  Enable: false
+  Enable: true
   Directory: demonstrations
   MaxFiles: 0
   StrictActionCheck: true
@@ -90,7 +90,7 @@ Models:
     Adam:
       LearningRate: 1.0e-4
     Laprop:
-      LearningRate: 1.12e-4 # 4.0e-5
+      LearningRate: 4.0e-5
       Epsilon: 1.0e-20
     Encoder:
       Depth: 16
@@ -145,7 +145,7 @@ Models:
         LearningRate: 3.0e-5
         Epsilon: 1.0e-5
       Laprop:
-        LearningRate: 1.12e-4 # 4.0e-5
+        LearningRate: 4.0e-5 # 4.0e-5
         Epsilon: 1.0e-20
       Actor:
         HiddenUnits: 256
@@ -169,7 +169,7 @@ Models:
         LearningRate: 3.e-5
         Epsilon: 1.0e-5
       Laprop:
-        LearningRate: 1.12e-4 # 4.0e-5
+        LearningRate: 4.0e-5 # 4.0e-5
         Epsilon: 1.0e-20
       Actor:
         HiddenUnits: 256
