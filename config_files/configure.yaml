@@ -42,7 +42,7 @@ JointTrainAgent:
   Beta: 1.0 # High focus on penalising 
 
 Demonstration:
-  Enable: true
+  Enable: false
   Directory: demonstrations
   MaxFiles: 0
   StrictActionCheck: true
@@ -79,7 +79,7 @@ Models:
       CropScale: [0.25, 1.0]
       CropRatio: [0.9, 1.1]
     ImportantInfoHashLoss:
-      Enable: true
+      Enable: false
       RewardThreshold: 0.5
       HashBits: 12
       MaxQueuePerKey: 8
