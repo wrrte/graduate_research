@@ -23,9 +23,9 @@ JointTrainAgent:
   BehaviourWarmUp: 16384 # 1024
   SkipPretrain: True
   NumEnvs: 1 # 1
-  BatchSize: 128 # 16
+  BatchSize: 64 # 16
   BatchLength: 128
-  ImagineBatchSize: 8192 # 1024
+  ImagineBatchSize: 4096 # 1024
   ImagineContextLength: 8
   ImagineBatchLength: 16
   RealityContextLength: 16
@@ -55,8 +55,8 @@ Models:
     InChannels: 3
     Act: SiLU
     CategoricalDim: 32
-    ClassDim: 32
-    HiddenStateDim: 512
+    ClassDim: 62 # 32
+    HiddenStateDim: 1024 # 512
     Optimiser: Laprop
     LatentDiscreteType: naive
     Max_grad_norm: 1000
