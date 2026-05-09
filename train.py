@@ -521,7 +521,7 @@ def joint_train_world_model_agent(config, logdir,
                 )
         print(colorama.Fore.GREEN + "Offline Pre-training Complete!\n" + colorama.Style.RESET_ALL)
     elif skip_pretrain:
-        print(colorama.Fore.YELLOW + "SkipPretrain is True. Demonstration data is loaded but Offline Pre-training is skipped." + colorama.Style.RESET_ALL)
+        print(colorama.Fore.YELLOW + "SkipPretrain is True. Offline Pre-training is skipped." + colorama.Style.RESET_ALL)
     # =========================================================
 
     remaining_steps = max(0, config.JointTrainAgent.SampleMaxSteps - demo_steps)
