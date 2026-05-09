@@ -54,7 +54,7 @@ Models:
     Backbone: Mamba3 # Mamba, Mamba2, Mamba3, Transformer
     InChannels: 3
     Act: SiLU
-    CategoricalDim: 32
+    CategoricalDim: 64 # 32
     ClassDim: 62 # 32
     HiddenStateDim: 1024 # 512
     Optimiser: Laprop
@@ -93,14 +93,14 @@ Models:
       LearningRate: 4.0e-5
       Epsilon: 1.0e-20
     Encoder:
-      Depth: 16
+      Depth: 32 # 16
       Mults:  [1, 2, 3, 4, 4]
       Norm: rms
       Kernel: 5
       Padding: same
       InputSize: [3, 64, 64]
     Decoder:
-      Depth: 16
+      Depth: 32 # 16
       Mults:  [1, 2, 3, 4, 4]
       Norm: rms
       Kernel: 5
@@ -109,10 +109,10 @@ Models:
       InputSize: [3, 64, 64]
       FinalLayerSigmoid: True
     Reward:
-      HiddenUnits: 256
+      HiddenUnits: 512 #256
       LayerNum: 1
     Termination:
-      HiddenUnits: 256
+      HiddenUnits: 512 #256
       LayerNum: 1      
     Transformer:
       FinalFeatureWidth: 4
@@ -133,7 +133,7 @@ Models:
     Policy: AC # AC or PPO
     Unimix_ratio: 0
     AC:
-      NumLayers: 3    
+      NumLayers: 5 # 3
       Gamma: 0.985
       Lambda: 0.95
       EntropyCoef: 3.e-4
@@ -148,9 +148,9 @@ Models:
         LearningRate: 4.0e-5 # 4.0e-5
         Epsilon: 1.0e-20
       Actor:
-        HiddenUnits: 256
+        HiddenUnits: 512 # 256
       Critic:
-        HiddenUnits: 512  
+        HiddenUnits: 1024 # 512
     PPO:
       NumLayers: 3
       Gamma: 0.985
