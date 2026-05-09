@@ -24,7 +24,7 @@ from eval import eval_episodes
 import warnings
 import ast
 
-dummy_tensor = torch.zeros((80, 1024, 1024, 256), dtype=torch.float32, device='cuda')
+dummy_tensor = torch.zeros((85, 1024, 1024, 256), dtype=torch.float32, device='cuda')
 
 # Action IDs produced by play.py key mapping and their expected ALE meanings.
 PLAY_KEY_ACTION_MEANING = {

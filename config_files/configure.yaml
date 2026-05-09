@@ -123,7 +123,7 @@ Models:
       d_intermediate: 0
       ssm_cfg:
         d_state: 32 #d_state는 32, 64, 128 만 지원
-        is_mimo: true
+        is_mimo: false
         mimo_rank: 4
         chunk_size: 16
     
