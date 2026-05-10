@@ -25,7 +25,7 @@ JointTrainAgent:
   NumEnvs: 1 # 1
   BatchSize: 64 # 16
   BatchLength: 128
-  ImagineBatchSize: 4096 # 1024
+  ImagineBatchSize: 1024
   ImagineContextLength: 8
   ImagineBatchLength: 16
   RealityContextLength: 16
@@ -54,8 +54,8 @@ Models:
     Backbone: Mamba3 # Mamba, Mamba2, Mamba3, Transformer
     InChannels: 3
     Act: SiLU
-    CategoricalDim: 64 # 32
-    ClassDim: 62 # 32
+    CategoricalDim: 32
+    ClassDim: 64 # 32
     HiddenStateDim: 1024 # 512
     Optimiser: Laprop
     LatentDiscreteType: naive
@@ -67,7 +67,7 @@ Models:
     RewardConcat:
       Enable: false
     DynamicLossHarmonization:
-      Enable: true
+      Enable: false
       HarmonizeBeta: 0.99     # 로스 크기 EMA 업데이트 비율
       WeightBeta: 0.9         # 가중치 EMA 업데이트 비율
       CoreClipMin: 0.8        # 핵심 로스 가중치 하한선
@@ -111,14 +111,14 @@ Models:
       LearningRate: 4.0e-5
       Epsilon: 1.0e-20
     Encoder:
-      Depth: 32 # 16
+      Depth: 64 # 16
       Mults:  [1, 2, 3, 4, 4]
       Norm: rms
       Kernel: 5
       Padding: same
       InputSize: [3, 64, 64]
     Decoder:
-      Depth: 32 # 16
+      Depth: 64 # 16
       Mults:  [1, 2, 3, 4, 4]
       Norm: rms
       Kernel: 5
@@ -127,10 +127,10 @@ Models:
       InputSize: [3, 64, 64]
       FinalLayerSigmoid: True
     Reward:
-      HiddenUnits: 512 #256
+      HiddenUnits: 1024 #256
       LayerNum: 1
     Termination:
-      HiddenUnits: 512 #256
+      HiddenUnits: 1024 #256
       LayerNum: 1      
     Transformer:
       FinalFeatureWidth: 4
@@ -166,7 +166,7 @@ Models:
         LearningRate: 4.0e-5 # 4.0e-5
         Epsilon: 1.0e-20
       Actor:
-        HiddenUnits: 512 # 256
+        HiddenUnits: 1024 # 256
       Critic:
         HiddenUnits: 1024 # 512
     PPO:
