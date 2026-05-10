@@ -19,13 +19,13 @@ Evaluate:
 JointTrainAgent:
   SampleMaxSteps: 105000 # Just to make sure the last episode will finish, no training after 100k
   BufferMaxLength: 100000
-  WorldModelWarmUp: 1024
-  BehaviourWarmUp: 1024
+  WorldModelWarmUp: 16384 # 1024
+  BehaviourWarmUp: 16384 # 1024
   SkipPretrain: True
-  NumEnvs: 1
-  BatchSize: 16
+  NumEnvs: 1 # 1
+  BatchSize: 64 # 16
   BatchLength: 128
-  ImagineBatchSize: 1024
+  ImagineBatchSize: 4096 # 1024
   ImagineContextLength: 8
   ImagineBatchLength: 16
   RealityContextLength: 16
@@ -54,9 +54,9 @@ Models:
     Backbone: Mamba3 # Mamba, Mamba2, Mamba3, Transformer
     InChannels: 3
     Act: SiLU
-    CategoricalDim: 32
-    ClassDim: 32
-    HiddenStateDim: 512
+    CategoricalDim: 64 # 32
+    ClassDim: 62 # 32
+    HiddenStateDim: 1024 # 512
     Optimiser: Laprop
     LatentDiscreteType: naive
     Max_grad_norm: 1000
@@ -66,13 +66,21 @@ Models:
     Weight_decay: 1.0e-4
     RewardConcat:
       Enable: false
+    DynamicLossHarmonization:
+      Enable: true
+      HarmonizeBeta: 0.99     # 로스 크기 EMA 업데이트 비율 (장기 추세)
+      WeightBeta: 0.9         # 가중치 EMA 업데이트 비율 (부드러운 변동 적용)
+      CoreClipMin: 0.8        # 핵심 로스 가중치 하한선
+      CoreClipMax: 1.2        # 핵심 로스 가중치 상한선
+      AuxClipMin: 0.5         # 보조 로스 가중치 하한선
+      AuxClipMax: 1.0         # 보조 로스 가중치 상한선
     Contrastive:
       Enable: false
       Steps: 5
       HiddenSize: 512
       OutSize: 512
       Layers: 2
-      LossScale: 1.0
+      LossScale: 0.01
       ExpLambda: 0.75
       Temperature: 0.1
       MaxSamples: 1024
@@ -93,14 +101,14 @@ Models:
       LearningRate: 4.0e-5
       Epsilon: 1.0e-20
     Encoder:
-      Depth: 16
+      Depth: 32 # 16
       Mults:  [1, 2, 3, 4, 4]
       Norm: rms
       Kernel: 5
       Padding: same
       InputSize: [3, 64, 64]
     Decoder:
-      Depth: 16
+      Depth: 32 # 16
       Mults:  [1, 2, 3, 4, 4]
       Norm: rms
       Kernel: 5
@@ -109,10 +117,10 @@ Models:
       InputSize: [3, 64, 64]
       FinalLayerSigmoid: True
     Reward:
-      HiddenUnits: 256
+      HiddenUnits: 512 #256
       LayerNum: 1
     Termination:
-      HiddenUnits: 256
+      HiddenUnits: 512 #256
       LayerNum: 1      
     Transformer:
       FinalFeatureWidth: 4
@@ -133,7 +141,7 @@ Models:
     Policy: AC # AC or PPO
     Unimix_ratio: 0
     AC:
-      NumLayers: 3
+      NumLayers: 5 # 3
       Gamma: 0.985
       Lambda: 0.95
       EntropyCoef: 3.e-4
@@ -145,12 +153,12 @@ Models:
         LearningRate: 3.0e-5
         Epsilon: 1.0e-5
       Laprop:
-        LearningRate: 4.0e-5
+        LearningRate: 4.0e-5 # 4.0e-5
         Epsilon: 1.0e-20
       Actor:
-        HiddenUnits: 256
+        HiddenUnits: 512 # 256
       Critic:
-        HiddenUnits: 512
+        HiddenUnits: 1024 # 512
     PPO:
       NumLayers: 3
       Gamma: 0.985
@@ -169,7 +177,7 @@ Models:
         LearningRate: 3.e-5
         Epsilon: 1.0e-5
       Laprop:
-        LearningRate: 4.0e-5
+        LearningRate: 4.0e-5 # 4.0e-5
         Epsilon: 1.0e-20
       Actor:
         HiddenUnits: 256

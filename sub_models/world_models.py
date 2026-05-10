@@ -470,6 +470,18 @@ class WorldModel(nn.Module):
         self.warmup_scheduler = LinearWarmup(self.optimizer, warmup_period=config.Models.WorldModel.Warmup_steps)
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp and config.Models.WorldModel.dtype is not torch.bfloat16)
 
+        # Dynamic Loss Harmonization Variables from config
+        dyn_cfg = config.Models.WorldModel.DynamicLossHarmonization if "DynamicLossHarmonization" in config.Models.WorldModel else {}
+        self.enable_dynamic_loss = bool(dyn_cfg["Enable"]) if "Enable" in dyn_cfg else False
+        self.loss_ema = {}
+        self.weight_ema = {}
+        self.harmonize_beta = float(dyn_cfg["HarmonizeBeta"]) if "HarmonizeBeta" in dyn_cfg else 0.99
+        self.weight_beta = float(dyn_cfg["WeightBeta"]) if "WeightBeta" in dyn_cfg else 0.9
+        self.core_clip_min = float(dyn_cfg["CoreClipMin"]) if "CoreClipMin" in dyn_cfg else 0.8
+        self.core_clip_max = float(dyn_cfg["CoreClipMax"]) if "CoreClipMax" in dyn_cfg else 1.2
+        self.aux_clip_min = float(dyn_cfg["AuxClipMin"]) if "AuxClipMin" in dyn_cfg else 0.5
+        self.aux_clip_max = float(dyn_cfg["AuxClipMax"]) if "AuxClipMax" in dyn_cfg else 1.0
+
     def _pad_for_mimo(self, mamba_input, is_first=None):
         orig_seqlen = None
         if self.is_mimo and isinstance(mamba_input, dict):
@@ -991,7 +1003,69 @@ class WorldModel(nn.Module):
             termination_loss = self.bce_with_logits_loss_func(termination_hat, termination)
             dynamics_loss, dynamics_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:].detach(), prior_logits[:, :-1])
             representation_loss, representation_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:], prior_logits[:, :-1].detach())
-            total_loss = reconstruction_loss + reward_loss + termination_loss + dynamics_loss + 0.1*representation_loss + contrastive_loss + important_hash_loss
+            
+            # --- Dynamic Loss Harmonization (Loss Variance-based) ---
+            if self.enable_dynamic_loss:
+                losses_dict = {
+                    'reconstruction': (reconstruction_loss, True),
+                    'reward': (reward_loss, True),
+                    'termination': (termination_loss, True),
+                    'dynamics': (dynamics_loss, True),
+                    'representation': (0.1 * representation_loss, False), 
+                    'contrastive': (contrastive_loss, False),
+                    'important_hash': (important_hash_loss, False)
+                }
+
+                dynamic_weights = {}
+                for name, (loss_tensor, is_core) in losses_dict.items():
+                    loss_val = loss_tensor.detach().item()
+
+                    if loss_val <= 1e-8:
+                        dynamic_weights[name] = 1.0
+                        continue
+
+                    if name not in self.loss_ema:
+                        self.loss_ema[name] = loss_val
+                        self.weight_ema[name] = 1.0
+
+                    self.loss_ema[name] = self.harmonize_beta * self.loss_ema[name] + (1 - self.harmonize_beta) * loss_val
+
+                    ratio = self.loss_ema[name] / (loss_val + 1e-8)
+
+                    if is_core:
+                        ratio_clipped = max(self.core_clip_min, min(self.core_clip_max, ratio))
+                    else:
+                        ratio_clipped = max(self.aux_clip_min, min(self.aux_clip_max, ratio))
+
+                    self.weight_ema[name] = self.weight_beta * self.weight_ema[name] + (1 - self.weight_beta) * ratio_clipped
+                    dynamic_weights[name] = self.weight_ema[name]
+
+                total_loss = (
+                    dynamic_weights['reconstruction'] * reconstruction_loss +
+                    dynamic_weights['reward'] * reward_loss +
+                    dynamic_weights['termination'] * termination_loss +
+                    dynamic_weights['dynamics'] * dynamics_loss +
+                    dynamic_weights['representation'] * (0.1 * representation_loss) +
+                    dynamic_weights['contrastive'] * contrastive_loss +
+                    dynamic_weights['important_hash'] * important_hash_loss
+                )
+                
+                if logger is not None and do_step:
+                    for name, weight in dynamic_weights.items():
+                        logger.log(f"Dynamic_Weights/{name}", weight, global_step=global_step)
+                    for name, ema_val in self.loss_ema.items():
+                        logger.log(f"Dynamic_Loss_EMA/{name}", ema_val, global_step=global_step)
+            else:
+                total_loss = (
+                    reconstruction_loss +
+                    reward_loss +
+                    termination_loss +
+                    dynamics_loss +
+                    0.1 * representation_loss +
+                    contrastive_loss +
+                    important_hash_loss
+                )
+            # --- Dynamic Loss Harmonization 끝 ---
 
         loss_scale = 1.0 / max(1, int(grad_accum_steps))
         self.scaler.scale(total_loss * loss_scale).backward()
