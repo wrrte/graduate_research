@@ -482,6 +482,20 @@ class WorldModel(nn.Module):
         self.aux_clip_min = float(dyn_cfg["AuxClipMin"]) if "AuxClipMin" in dyn_cfg else 0.5
         self.aux_clip_max = float(dyn_cfg["AuxClipMax"]) if "AuxClipMax" in dyn_cfg else 1.0
 
+        loss_cat_cfg = dyn_cfg["LossCategories"] if "LossCategories" in dyn_cfg else {}
+        default_categories = {
+            'reconstruction': 'core_dense',
+            'dynamics': 'core_dense',
+            'reward': 'sparse',
+            'termination': 'sparse',
+            'representation': 'aux_dense',
+            'contrastive': 'aux_dense',
+            'important_hash': 'sparse'
+        }
+        self.loss_categories = {}
+        for k, default_cat in default_categories.items():
+            self.loss_categories[k] = loss_cat_cfg[k] if k in loss_cat_cfg else default_cat
+
     def _pad_for_mimo(self, mamba_input, is_first=None):
         orig_seqlen = None
         if self.is_mimo and isinstance(mamba_input, dict):
@@ -1004,20 +1018,25 @@ class WorldModel(nn.Module):
             dynamics_loss, dynamics_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:].detach(), prior_logits[:, :-1])
             representation_loss, representation_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:], prior_logits[:, :-1].detach())
             
-            # --- Dynamic Loss Harmonization (Loss Variance-based) ---
+            # --- Dynamic Loss Harmonization (카테고리 기반 분기) ---
             if self.enable_dynamic_loss:
                 losses_dict = {
-                    'reconstruction': (reconstruction_loss, True),
-                    'reward': (reward_loss, True),
-                    'termination': (termination_loss, True),
-                    'dynamics': (dynamics_loss, True),
-                    'representation': (0.1 * representation_loss, False), 
-                    'contrastive': (contrastive_loss, False),
-                    'important_hash': (important_hash_loss, False)
+                    'reconstruction': (reconstruction_loss, self.loss_categories.get('reconstruction', 'core_dense')),
+                    'dynamics': (dynamics_loss, self.loss_categories.get('dynamics', 'core_dense')),
+                    'reward': (reward_loss, self.loss_categories.get('reward', 'sparse')),
+                    'termination': (termination_loss, self.loss_categories.get('termination', 'sparse')),
+                    'representation': (0.1 * representation_loss, self.loss_categories.get('representation', 'aux_dense')), 
+                    'contrastive': (contrastive_loss, self.loss_categories.get('contrastive', 'aux_dense')),
+                    'important_hash': (important_hash_loss, self.loss_categories.get('important_hash', 'sparse'))
                 }
 
                 dynamic_weights = {}
-                for name, (loss_tensor, is_core) in losses_dict.items():
+                for name, (loss_tensor, category) in losses_dict.items():
+                    # sparse 로스로 분류된 경우 조화 연산(EMA 및 비율 조정)을 완전히 건너뛰고 1.0 유지
+                    if category == 'sparse':
+                        dynamic_weights[name] = 1.0
+                        continue
+
                     loss_val = loss_tensor.detach().item()
 
                     if loss_val <= 1e-8:
@@ -1028,14 +1047,17 @@ class WorldModel(nn.Module):
                         self.loss_ema[name] = loss_val
                         self.weight_ema[name] = 1.0
 
+                    # 밀집(Dense) 로스에 대해서만 EMA를 추적하고 업데이트
                     self.loss_ema[name] = self.harmonize_beta * self.loss_ema[name] + (1 - self.harmonize_beta) * loss_val
 
                     ratio = self.loss_ema[name] / (loss_val + 1e-8)
 
-                    if is_core:
+                    if category == 'core_dense':
                         ratio_clipped = max(self.core_clip_min, min(self.core_clip_max, ratio))
-                    else:
+                    elif category == 'aux_dense':
                         ratio_clipped = max(self.aux_clip_min, min(self.aux_clip_max, ratio))
+                    else:
+                        ratio_clipped = 1.0
 
                     self.weight_ema[name] = self.weight_beta * self.weight_ema[name] + (1 - self.weight_beta) * ratio_clipped
                     dynamic_weights[name] = self.weight_ema[name]
@@ -1052,6 +1074,7 @@ class WorldModel(nn.Module):
                 
                 if logger is not None and do_step:
                     for name, weight in dynamic_weights.items():
+                        # sparse 로스는 로깅에서 제외하거나 고정된 1.0 값을 볼 수 있습니다.
                         logger.log(f"Dynamic_Weights/{name}", weight, global_step=global_step)
                     for name, ema_val in self.loss_ema.items():
                         logger.log(f"Dynamic_Loss_EMA/{name}", ema_val, global_step=global_step)

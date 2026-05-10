@@ -68,12 +68,22 @@ Models:
       Enable: false
     DynamicLossHarmonization:
       Enable: true
-      HarmonizeBeta: 0.99     # 로스 크기 EMA 업데이트 비율 (장기 추세)
-      WeightBeta: 0.9         # 가중치 EMA 업데이트 비율 (부드러운 변동 적용)
+      HarmonizeBeta: 0.99     # 로스 크기 EMA 업데이트 비율
+      WeightBeta: 0.9         # 가중치 EMA 업데이트 비율
       CoreClipMin: 0.8        # 핵심 로스 가중치 하한선
       CoreClipMax: 1.2        # 핵심 로스 가중치 상한선
       AuxClipMin: 0.5         # 보조 로스 가중치 하한선
       AuxClipMax: 1.0         # 보조 로스 가중치 상한선
+      # [추가] 각 로스의 특성 분류 (core_dense, aux_dense, sparse 중 택 1)
+      # sparse로 지정된 로스는 DLH 연산에서 완전히 제외되어 오버헤드 없이 순수하게 역전파됩니다.
+      LossCategories:
+        reconstruction: core_dense
+        dynamics: core_dense
+        representation: aux_dense
+        contrastive: aux_dense
+        reward: sparse
+        termination: sparse
+        important_hash: sparse
     Contrastive:
       Enable: false
       Steps: 5
