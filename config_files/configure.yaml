@@ -149,9 +149,9 @@ Models:
   Agent:
     dtype: float32
     Policy: AC # AC or PPO
-    Unimix_ratio: 0
+    Unimix_ratio: 0.01 # 0
     AC:
-      NumLayers: 5 # 3
+      NumLayers: 3
       Gamma: 0.985
       Lambda: 0.95
       EntropyCoef: 3.e-4
