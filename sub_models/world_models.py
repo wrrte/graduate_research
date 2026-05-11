@@ -477,10 +477,8 @@ class WorldModel(nn.Module):
         self.weight_ema = {}
         self.harmonize_beta = float(dyn_cfg["HarmonizeBeta"]) if "HarmonizeBeta" in dyn_cfg else 0.99
         self.weight_beta = float(dyn_cfg["WeightBeta"]) if "WeightBeta" in dyn_cfg else 0.9
-        self.core_clip_min = float(dyn_cfg["CoreClipMin"]) if "CoreClipMin" in dyn_cfg else 0.8
-        self.core_clip_max = float(dyn_cfg["CoreClipMax"]) if "CoreClipMax" in dyn_cfg else 1.2
-        self.aux_clip_min = float(dyn_cfg["AuxClipMin"]) if "AuxClipMin" in dyn_cfg else 0.5
-        self.aux_clip_max = float(dyn_cfg["AuxClipMax"]) if "AuxClipMax" in dyn_cfg else 1.0
+        self.core_target_scale = float(dyn_cfg.get("CoreTargetScale", 1.0))
+        self.aux_target_scale = float(dyn_cfg.get("AuxTargetScale", 0.5))
 
         loss_cat_cfg = dyn_cfg["LossCategories"] if "LossCategories" in dyn_cfg else {}
         default_categories = {
@@ -1025,7 +1023,8 @@ class WorldModel(nn.Module):
                     'dynamics': (dynamics_loss, self.loss_categories.get('dynamics', 'core_dense')),
                     'reward': (reward_loss, self.loss_categories.get('reward', 'sparse')),
                     'termination': (termination_loss, self.loss_categories.get('termination', 'sparse')),
-                    'representation': (0.1 * representation_loss, self.loss_categories.get('representation', 'aux_dense')), 
+                    # 기존에 하드코딩했던 0.1을 빼고 원본 Loss 그대로 전달
+                    'representation': (representation_loss, self.loss_categories.get('representation', 'aux_dense')), 
                     'contrastive': (contrastive_loss, self.loss_categories.get('contrastive', 'aux_dense')),
                     'important_hash': (important_hash_loss, self.loss_categories.get('important_hash', 'sparse'))
                 }
@@ -1043,38 +1042,38 @@ class WorldModel(nn.Module):
                         dynamic_weights[name] = 1.0
                         continue
 
+                    # 타겟 스케일 설정 (core는 1.0, aux는 0.5)
+                    target_scale = 1.0 if category == 'core_dense' else 0.5
+
                     if name not in self.loss_ema:
                         self.loss_ema[name] = loss_val
-                        self.weight_ema[name] = 1.0
+                        # 초기 가중치는 타겟을 초기 loss로 나눈 값으로 설정
+                        self.weight_ema[name] = target_scale / (loss_val + 1e-8)
 
                     # 밀집(Dense) 로스에 대해서만 EMA를 추적하고 업데이트
                     self.loss_ema[name] = self.harmonize_beta * self.loss_ema[name] + (1 - self.harmonize_beta) * loss_val
 
-                    ratio = self.loss_ema[name] / (loss_val + 1e-8)
+                    # [핵심 수정] 목표 스케일(1.0 또는 0.5)을 Loss의 이동평균으로 나누어 이상적인 가중치(w) 도출
+                    ideal_weight = target_scale / (self.loss_ema[name] + 1e-8)
 
-                    if category == 'core_dense':
-                        ratio_clipped = max(self.core_clip_min, min(self.core_clip_max, ratio))
-                    elif category == 'aux_dense':
-                        ratio_clipped = max(self.aux_clip_min, min(self.aux_clip_max, ratio))
-                    else:
-                        ratio_clipped = 1.0
-
-                    self.weight_ema[name] = self.weight_beta * self.weight_ema[name] + (1 - self.weight_beta) * ratio_clipped
+                    # 가중치 자체가 너무 급변하지 않도록 가중치 전용 EMA 적용
+                    self.weight_ema[name] = self.weight_beta * self.weight_ema[name] + (1 - self.weight_beta) * ideal_weight
                     dynamic_weights[name] = self.weight_ema[name]
 
+                # total_loss 계산 (representation에 곱하던 수동 0.1 제거. dynamic_weights가 알아서 0.5로 맞춰줌)
                 total_loss = (
                     dynamic_weights['reconstruction'] * reconstruction_loss +
                     dynamic_weights['reward'] * reward_loss +
                     dynamic_weights['termination'] * termination_loss +
                     dynamic_weights['dynamics'] * dynamics_loss +
-                    dynamic_weights['representation'] * (0.1 * representation_loss) +
+                    dynamic_weights['representation'] * representation_loss +
                     dynamic_weights['contrastive'] * contrastive_loss +
                     dynamic_weights['important_hash'] * important_hash_loss
                 )
                 
                 if logger is not None and do_step:
                     for name, weight in dynamic_weights.items():
-                        # sparse 로스는 로깅에서 제외하거나 고정된 1.0 값을 볼 수 있습니다.
+                        # sparse 로스는 로깅에서 고정된 1.0 값을 볼 수 있습니다.
                         logger.log(f"Dynamic_Weights/{name}", weight, global_step=global_step)
                     for name, ema_val in self.loss_ema.items():
                         logger.log(f"Dynamic_Loss_EMA/{name}", ema_val, global_step=global_step)
