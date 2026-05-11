@@ -96,10 +96,10 @@ Models:
       CropRatio: [0.9, 1.1]
     ImportantInfoHashLoss:
       Enable: false
-      RewardThreshold: 0.5
-      HashBits: 12
-      MaxQueuePerKey: 8
-      MaxPastSamples: 4
+      SigmaThreshold: 2.0       # [추가] 1.5로 낮추면 더 자주 트리거되고, 3.0으로 높이면 아주 희귀한 경우만 처리합니다.
+      HashBits: 13              # 기존 12에서 13 또는 14로 변경 (해시 공간 확대)
+      MaxQueuePerKey: 100000    # 기존 8에서 100000으로 변경 (버퍼 전체 저장 허용)
+      MaxPastSamples: 32
       MaxPairsPerBatch: 256
       LossScale: 0.01
       StoreOnlyTriggered: false # 보상 임계값을 초과하지 않는 애들도 일단 해싱해서 저장은 해야 함. 그래야 임계값을 초과하는 애들이 나중에 이런 평범한 샘플과 차별화되도록 비교할 수 있으니깐.

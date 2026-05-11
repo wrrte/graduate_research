@@ -10,8 +10,8 @@ class ImportantInfoHashLoss(nn.Module):
         cfg = config or {}
         self.enabled = bool(cfg.get("Enable", False))
         
-        # 2 sigma 임계값으로 대체 적용
-        self.sigma_threshold = 2.0
+        # [수정] RewardThreshold 대신 SigmaThreshold를 설정에서 읽어옴 (기본값 2.0)
+        self.sigma_threshold = float(cfg.get("SigmaThreshold", 2.0))
         
         self.hash_bits = int(cfg.get("HashBits", 12))
         self.max_queue_per_key = int(cfg.get("MaxQueuePerKey", 8))
@@ -75,6 +75,8 @@ class ImportantInfoHashLoss(nn.Module):
             queue.append((obs_item, float(reward_item)))
 
     def forward(self, obs, latent, reward, encode_fn, reward_mean, reward_std):
+        import random  # 무작위 샘플링을 위해 추가
+
         if not self.enabled:
             return latent.new_tensor(0.0)
         if obs.numel() == 0:
@@ -100,7 +102,13 @@ class ImportantInfoHashLoss(nn.Module):
             if not queue:
                 continue
 
-            entries = list(queue)[-self.max_past_samples:]
+            # 저장된 데이터가 뽑으려는 개수보다 많으면 '무작위'로 추출, 적으면 전부 사용
+            queue_list = list(queue)
+            if len(queue_list) > self.max_past_samples:
+                entries = random.sample(queue_list, self.max_past_samples)
+            else:
+                entries = queue_list
+
             for obs_item, reward_item in entries:
                 past_obs_list.append(obs_item)
                 past_reward_list.append(reward_item)
