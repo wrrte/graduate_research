@@ -72,12 +72,18 @@ class ImportantInfoHashLoss(nn.Module):
         keys = (bits.to(torch.int64) * bit_values).sum(dim=-1)
         return keys.detach().cpu().tolist()
 
-    # [수정] 인자에 td_error 추가
+    # [수정] 인자에 td_error 추가 및 차원 Squeeze
     def _update_memory(self, obs, reward, latent, reward_mean, reward_std, td_error=None):
         if not self.enabled:
             return
         if obs.numel() == 0:
             return
+            
+        # [수정] 차원 불일치 버그 픽스 (NxN 오염 및 브로드캐스팅 방지)
+        if reward.dim() == 3:
+            reward = reward.squeeze(-1)
+        if td_error is not None and td_error.dim() == 3:
+            td_error = td_error.squeeze(-1)
 
         if self.store_only_triggered:
             if self.trigger_type == "td_error" and td_error is not None:
@@ -109,7 +115,7 @@ class ImportantInfoHashLoss(nn.Module):
                 self.hash_memory[key] = queue
             queue.append((obs_item, float(reward_item)))
 
-    # [수정] 2번 최적화 적용: 이미 계산된 연속 확률(logits)을 직접 인자로 넘겨받음 및 td_error 인자 추가
+    # [수정] 2번 최적화 적용 및 2번 버그(NxN 차원 팽창) 방지를 위한 Squeeze 적용
     def forward(self, obs, latent, logits, reward, encode_fn, reward_mean, reward_std, td_error=None):
         import random  # 무작위 샘플링을 위해 추가
 
@@ -117,6 +123,12 @@ class ImportantInfoHashLoss(nn.Module):
             return latent.new_tensor(0.0)
         if obs.numel() == 0:
             return latent.new_tensor(0.0)
+            
+        # [수정] 차원 불일치 버그 픽스 (NxN 오염 및 브로드캐스팅 방지)
+        if reward.dim() == 3:
+            reward = reward.squeeze(-1)
+        if td_error is not None and td_error.dim() == 3:
+            td_error = td_error.squeeze(-1)
 
         # [수정] config의 TriggerType에 따른 조건부 트리거 마스크 생성
         if self.trigger_type == "td_error":
@@ -208,6 +220,7 @@ class ImportantInfoHashLoss(nn.Module):
                 self.hash_memory[new_key] = target_queue
             target_queue.append((past_obs_list[i], float(past_reward_list[i])))
 
+        # Squeeze가 적용되어 curr_reward는 (N,), past_reward도 (N,)이 됨
         curr_reward = torch.stack(curr_reward_list, dim=0)
         past_reward = torch.tensor(past_reward_list, device=latent.device, dtype=curr_reward.dtype)
 

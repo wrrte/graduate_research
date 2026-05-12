@@ -1018,10 +1018,14 @@ class WorldModel(nn.Module):
                         values = agent.value(agent_input) # (B, L)
                         gamma = getattr(agent, 'gamma', 0.985)
                         
-                        td_error = torch.zeros_like(reward)
+                        # [수정] 1번 버그 픽스: (B, L, 1) 형태가 브로드캐스팅 팽창을 일으키지 않도록 Squeeze
+                        reward_sq = reward.squeeze(-1) if reward.dim() == 3 else reward
+                        term_sq = termination.squeeze(-1) if termination.dim() == 3 else termination
+                        
+                        td_error = torch.zeros_like(reward_sq)
                         # delta_t = r_t + gamma * V_{t+1} * (1 - done_t) - V_t
-                        td_error[:, :-1] = reward[:, :-1] + gamma * values[:, 1:] * (1 - termination[:, :-1]) - values[:, :-1]
-                        td_error[:, -1] = reward[:, -1] - values[:, -1] # 시퀀스 마지막 꼬리 부분 근사
+                        td_error[:, :-1] = reward_sq[:, :-1] + gamma * values[:, 1:] * (1 - term_sq[:, :-1]) - values[:, :-1]
+                        td_error[:, -1] = reward_sq[:, -1] - values[:, -1] # 시퀀스 마지막 꼬리 부분 근사
                 else:
                     raise ValueError("TriggerType이 'td_error'로 설정되었으나, WorldModel.update 메서드에 agent 객체가 전달되지 않았습니다.")
             # -----------------------------------------------------------------------
