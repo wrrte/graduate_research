@@ -1026,7 +1026,10 @@ class WorldModel(nn.Module):
                         td_error = torch.zeros_like(reward_sq)
                         # delta_t = r_t + gamma * V_{t+1} * (1 - done_t) - V_t
                         td_error[:, :-1] = reward_sq[:, :-1] + gamma * values_sq[:, 1:] * (1 - term_sq[:, :-1]) - values_sq[:, :-1]
-                        td_error[:, -1] = reward_sq[:, -1] - values_sq[:, -1] # 시퀀스 마지막 꼬리 부분 근사
+                        
+                        # [수정] 1번 에러 픽스: 마지막 스텝은 미래 가치(V_{t+1})가 존재하지 않아 
+                        # 정상적인 TD-Error 계산이 불가능하므로, 오염 방지를 위해 0.0으로 마스킹 처리
+                        td_error[:, -1] = 0.0
                 else:
                     raise ValueError("TriggerType이 'td_error'로 설정되었으나, WorldModel.update 메서드에 agent 객체가 전달되지 않았습니다.")
             # -----------------------------------------------------------------------

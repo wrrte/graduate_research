@@ -44,6 +44,8 @@ class ImportantInfoHashLoss(nn.Module):
 
     # [추가] 웰포드 알고리즘을 통한 평균 및 분산 업데이트
     def _update_welford(self, td_error):
+        # [수정] 2번 에러 픽스: bfloat16의 정밀도 부족으로 인한 언더플로우/오버플로우 방지를 위해 float32 캐스팅
+        td_error = td_error.to(torch.float32)
         batch_mean = torch.mean(td_error)
         batch_var = torch.var(td_error, unbiased=False)
         batch_count = torch.tensor(td_error.numel(), dtype=torch.float32, device=td_error.device)
@@ -87,8 +89,10 @@ class ImportantInfoHashLoss(nn.Module):
 
         if self.store_only_triggered:
             if self.trigger_type == "td_error" and td_error is not None:
+                # [수정] 2번 에러 픽스: 비교 연산 시에도 float32 적용
+                td_error_float = td_error.to(torch.float32)
                 td_std = torch.sqrt(self.td_error_var + 1e-8)
-                store_mask = torch.abs(td_error - self.td_error_mean) >= self.sigma_threshold * td_std
+                store_mask = torch.abs(td_error_float - self.td_error_mean) >= self.sigma_threshold * td_std
             else:
                 store_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
         else:
@@ -134,10 +138,12 @@ class ImportantInfoHashLoss(nn.Module):
         if self.trigger_type == "td_error":
             if td_error is None:
                 raise ValueError("TriggerType이 'td_error'일 경우 forward에 td_error를 반드시 전달해야 합니다.")
+            # [수정] 2번 에러 픽스: 분산 계산의 안정성을 위해 float32 변환 후 연산
+            td_error_float = td_error.detach().to(torch.float32)
             # 웰포드 방정식으로 통계량 업데이트
-            td_mean, td_var = self._update_welford(td_error.detach())
+            td_mean, td_var = self._update_welford(td_error_float)
             td_std = torch.sqrt(td_var + 1e-8)
-            trigger_mask = torch.abs(td_error - td_mean) >= self.sigma_threshold * td_std
+            trigger_mask = torch.abs(td_error_float - td_mean) >= self.sigma_threshold * td_std
         else:
             trigger_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
 
