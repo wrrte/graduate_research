@@ -74,7 +74,7 @@ class ImportantInfoHashLoss(nn.Module):
                 self.hash_memory[key] = queue
             queue.append((obs_item, float(reward_item)))
 
-    def forward(self, obs, latent, reward, encode_logits_fn, reward_mean, reward_std):
+    def forward(self, obs, latent, reward, encode_fn, reward_mean, reward_std):
         import random  # 무작위 샘플링을 위해 추가
 
         if not self.enabled:
@@ -89,15 +89,12 @@ class ImportantInfoHashLoss(nn.Module):
 
         latent_trigger = latent[trigger_mask]
         reward_trigger = reward[trigger_mask]
-        # [수정] Logits 추출을 위해 현재 시점의 obs 데이터 확보
         obs_trigger = obs[trigger_mask]
-        
-        # 해싱(Hashing)은 군집화를 위해 기존의 이산 노이즈(latent)를 그대로 사용
         keys = self._hash_keys(latent_trigger.detach())
 
         past_obs_list = []
         past_reward_list = []
-        curr_obs_list = [] # [수정] latent 대신 obs를 수집
+        curr_obs_list = []
         curr_reward_list = []
         pair_count = 0
 
@@ -113,10 +110,15 @@ class ImportantInfoHashLoss(nn.Module):
             else:
                 entries = queue_list
 
+            # [추가] Re-hashing(방 이동)을 위해 선택된 32개의 샘플을 기존 큐에서 안전하게 제거
+            entries_ids = set(id(e) for e in entries)
+            new_queue = deque([e for e in queue if id(e) not in entries_ids], maxlen=self.max_queue_per_key)
+            self.hash_memory[key] = new_queue
+
             for obs_item, reward_item in entries:
                 past_obs_list.append(obs_item)
                 past_reward_list.append(reward_item)
-                curr_obs_list.append(obs_trigger[idx]) # [수정] 매칭된 현재 obs 기록
+                curr_obs_list.append(obs_trigger[idx])
                 curr_reward_list.append(reward_trigger[idx])
                 pair_count += 1
                 if pair_count >= self.max_pairs_per_batch:
@@ -135,19 +137,31 @@ class ImportantInfoHashLoss(nn.Module):
         curr_obs = torch.stack(curr_obs_list, dim=0)
         curr_obs = curr_obs.unsqueeze(1)
 
-        # [수정] 3번 적용: 샘플링된 이산 노이즈(latent) 대신 Logits를 직접 인코딩
-        past_logits = encode_logits_fn(past_obs).squeeze(1)
-        curr_logits = encode_logits_fn(curr_obs).squeeze(1)
+        # [수정] encode_fn은 (latent, logits) 튜플을 반환하여 방 배정용과 비교용을 분리 지원
+        past_latent, past_logits = encode_fn(past_obs)
+        past_latent, past_logits = past_latent.squeeze(1), past_logits.squeeze(1)
+        
+        _, curr_logits = encode_fn(curr_obs)
+        curr_logits = curr_logits.squeeze(1)
 
-        # [수정] 2번 적용: 과거 표상은 움직이지 않는 닻(Anchor) 역할을 하도록 역전파(Gradient) 완벽 차단
+        # [수정] 2번 적용: 과거 표상은 움직이지 않는 닻(Anchor) 역할을 하도록 역전파 완벽 차단
+        past_latent = past_latent.detach()
         past_logits = past_logits.detach()
+
+        # [추가] Re-hashing: 최신 인코더에서 추출된 past_latent로 새로운 방 번호(Key) 계산 후 재삽입
+        new_keys = self._hash_keys(past_latent)
+        for i, new_key in enumerate(new_keys):
+            target_queue = self.hash_memory.get(new_key)
+            if target_queue is None:
+                target_queue = deque(maxlen=self.max_queue_per_key)
+                self.hash_memory[new_key] = target_queue
+            target_queue.append((past_obs_list[i], float(past_reward_list[i])))
 
         curr_reward = torch.stack(curr_reward_list, dim=0)
         past_reward = torch.tensor(past_reward_list, device=latent.device, dtype=curr_reward.dtype)
 
         reward_diff = torch.abs(curr_reward - past_reward)
-        
-        # [수정] 3번 적용: 이산 노이즈가 제거된 Logits를 사용하여 코사인 유사도 계산
+        # [수정] 3번 적용: 노이즈가 제거된 logits를 사용하여 코사인 유사도 정밀 계산
         cosine_sim = F.cosine_similarity(curr_logits, past_logits, dim=-1, eps=1e-8)
         loss = (reward_diff * cosine_sim).mean() * self.loss_scale
 

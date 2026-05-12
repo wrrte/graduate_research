@@ -927,14 +927,15 @@ class WorldModel(nn.Module):
                 logger.log("Imagine/predict_video", img_frames, global_step=global_step)
         return torch.cat([self.sample_buffer, self.dist_feat_buffer], dim=-1), self.action_buffer, old_logits_tensor, torch.cat([context_flattened_sample, context_dist_feat], dim=-1), self.reward_hat_buffer, self.termination_hat_buffer
 
-    def encode_logits(self, obs):
-        """ImportantInfoHashLoss에서 노이즈 없는 코사인 유사도 계산을 위해 Logits를 반환하는 함수"""
+    def encode_obs_and_logits(self, obs):
+        """ImportantInfoHashLoss 지원용: 이산 노이즈(Latent)와 연속 확률(Logits) 모두 반환"""
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             embedding = self.encoder(obs)
             post_logits = self.dist_head.forward_post(embedding)
-            # Logits 자체를 (B, L, K*C) 형태로 평탄화(Flatten)하여 반환
+            sample = self.stright_throught_gradient(post_logits, sample_mode="random_sample")
+            flattened_sample = self.flatten_sample(sample)
             flattened_logits = rearrange(post_logits, "B L K C -> B L (K C)")
-        return flattened_logits
+        return flattened_sample, flattened_logits
     
     @profile
     def update(self, obs, action, reward, termination, is_first, global_step, epoch_step, logger=None, grad_accum_steps=1, do_step=True, zero_grad=False, reward_mean=0.0, reward_std=1e-5):
@@ -1011,7 +1012,7 @@ class WorldModel(nn.Module):
                 obs=obs,
                 latent=flattened_sample,
                 reward=reward,
-                encode_logits_fn=self.encode_logits, # [수정] self.encode_obs 대신 새로운 함수 넘기기
+                encode_fn=self.encode_obs_and_logits, # [수정] 이중 반환 함수로 교체
                 reward_mean=reward_mean,
                 reward_std=reward_std
             )
