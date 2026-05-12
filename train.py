@@ -24,7 +24,7 @@ from eval import eval_episodes
 import warnings
 import ast
 
-# dummy_tensor = torch.zeros((85, 1024, 1024, 256), dtype=torch.float32, device='cuda')
+dummy_tensor = torch.zeros((40, 1024, 1024, 256), dtype=torch.float32, device='cuda')
 
 # Action IDs produced by play.py key mapping and their expected ALE meanings.
 PLAY_KEY_ACTION_MEANING = {
@@ -323,7 +323,7 @@ def preload_play_demonstrations(config, replay_buffer: ReplayBuffer, env):
 
 
 @profile
-def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel, batch_size, batch_length, logger, epoch, global_step, micro_batch_size=None):
+def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel, agent, batch_size, batch_length, logger, epoch, global_step, micro_batch_size=None):
     epoch_reconstruction_loss_list = []
     epoch_reward_loss_list = []
     epoch_termination_loss_list = []
@@ -356,6 +356,7 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
                 is_first,
                 global_step=global_step,
                 epoch_step=e,
+                agent=agent, # [수정] TD-Error 계산을 위해 agent 객체 추가 전달
                 logger=logger if do_step else None,
                 grad_accum_steps=accum_steps,
                 do_step=do_step,
@@ -394,7 +395,6 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
             epoch_important_hash_loss_list.append(important_hash_loss)
     if logger is not None:
         logger.log("WorldModel/reconstruction_loss", np.mean(epoch_reconstruction_loss_list), global_step=global_step)
-        # logger.log("WorldModel/augmented_reconstruction_loss", augmented_reconstruction_loss.item(), global_step=global_step)
         logger.log("WorldModel/reward_loss",np.mean(epoch_reward_loss_list), global_step=global_step)
         logger.log("WorldModel/termination_loss", np.mean(epoch_termination_loss_list), global_step=global_step)
         logger.log("WorldModel/dynamics_loss", np.mean(epoch_dynamics_loss_list), global_step=global_step)
@@ -462,20 +462,15 @@ def joint_train_world_model_agent(config, logdir,
     context_reward = deque(maxlen=config.JointTrainAgent.RealityContextLength)
     context_is_first = deque(maxlen=config.JointTrainAgent.RealityContextLength)
 
-    # === [수정] 오프라인 사전 학습 (Offline Pre-training) 제어 로직 ===
-    # SkipPretrain 옵션 확인 (YAML에 없으면 기본값 False)
     skip_pretrain = _get_nested_config(config, 'JointTrainAgent.SkipPretrain', False)
 
     if demo_steps > 0 and not skip_pretrain:
-        # 데몬스트레이션 스텝 수를 학습 주기 단위로 환산하되, num_envs에 반비례하도록 나누어 사전 학습 비중을 보정
         pretrain_updates = (demo_steps // num_envs) // config.JointTrainAgent.TrainDynamicsEverySteps
         print(colorama.Fore.CYAN + f"\nStarting Offline Pre-training: {pretrain_updates} updates (scaled down by num_envs={num_envs}) using demonstration data..." + colorama.Style.RESET_ALL)
         
         for p_step in tqdm(range(pretrain_updates), desc='Pre-training (Offline)'):
-            # 로깅용 가상 스텝 (온라인 수집 템포에 맞추어 num_envs 배율 적용)
             pseudo_global_step = p_step * config.JointTrainAgent.TrainDynamicsEverySteps * num_envs
             
-            # 1. World Model 사전 학습
             if replay_buffer.ready('world_model'):
                 wm_micro_batch_size = int(_get_nested_config(
                     config,
@@ -485,6 +480,7 @@ def joint_train_world_model_agent(config, logdir,
                 train_world_model_step(
                     replay_buffer=replay_buffer,
                     world_model=world_model,
+                    agent=agent, # [수정] 사전 학습에서도 agent 전달
                     batch_size=config.JointTrainAgent.BatchSize,
                     batch_length=config.JointTrainAgent.BatchLength,
                     logger=logger,
@@ -493,7 +489,6 @@ def joint_train_world_model_agent(config, logdir,
                     micro_batch_size=wm_micro_batch_size,
                 )
 
-            # 2. Behaviour Model 사전 학습
             if replay_buffer.ready('behaviour') and pseudo_global_step % (config.JointTrainAgent.TrainAgentEverySteps * num_envs) == 0:
                 imagine_latent, agent_action, old_logits, context_latent, imagined_context_reward, imagined_context_termination, imagine_reward, imagine_termination = world_model_imagine_data(
                     replay_buffer=replay_buffer,
@@ -522,25 +517,21 @@ def joint_train_world_model_agent(config, logdir,
         print(colorama.Fore.GREEN + "Offline Pre-training Complete!\n" + colorama.Style.RESET_ALL)
     elif skip_pretrain:
         print(colorama.Fore.YELLOW + "SkipPretrain is True. Offline Pre-training is skipped." + colorama.Style.RESET_ALL)
-    # =========================================================
 
     remaining_steps = max(0, config.JointTrainAgent.SampleMaxSteps - demo_steps)
     total_iters = config.JointTrainAgent.SampleMaxSteps // num_envs
     initial_iters = demo_steps // num_envs
 
-    # sample and train (Online)
     for total_steps in tqdm(range(remaining_steps // num_envs), 
                             desc='Training (Online)',
                             initial=initial_iters,
                             total=total_iters):
         
-        # [수정] 현재 스텝과 직전 스텝 계산 (경계 교차 기법용)
         global_step = demo_steps + total_steps * num_envs
         prev_global_step = global_step - num_envs 
         
         wm_ready = replay_buffer.ready('world_model')
         
-        # sample part >>>
         if wm_ready:
             world_model.eval()
             agent.eval()
@@ -628,7 +619,6 @@ def joint_train_world_model_agent(config, logdir,
 
                 sum_reward[env_idx] = 0.0
 
-        # [수정] World Model 업데이트 조건 (경계 교차 기법)
         wm_train_every = config.JointTrainAgent.TrainDynamicsEverySteps
         if replay_buffer.ready('world_model') and (prev_global_step // wm_train_every < global_step // wm_train_every) and global_step <= config.JointTrainAgent.FreezeWorldModelAfterSteps:
             wm_micro_batch_size = int(_get_nested_config(
@@ -639,6 +629,7 @@ def joint_train_world_model_agent(config, logdir,
             train_world_model_step(
                 replay_buffer=replay_buffer,
                 world_model=world_model,
+                agent=agent, # [수정] 온라인 학습에서도 agent 전달
                 batch_size=config.JointTrainAgent.BatchSize,
                 batch_length=config.JointTrainAgent.BatchLength,
                 logger=logger,
@@ -647,7 +638,6 @@ def joint_train_world_model_agent(config, logdir,
                 micro_batch_size=wm_micro_batch_size,
             )
 
-        # [수정] Agent 업데이트 조건 (경계 교차 기법)
         agent_train_every = config.JointTrainAgent.TrainAgentEverySteps
         if replay_buffer.ready('behaviour') and (prev_global_step // agent_train_every < global_step // agent_train_every) and global_step <= config.JointTrainAgent.FreezeBehaviourAfterSteps:
             log_video = (prev_global_step // config.JointTrainAgent.SaveEverySteps < global_step // config.JointTrainAgent.SaveEverySteps)

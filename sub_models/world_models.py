@@ -938,7 +938,7 @@ class WorldModel(nn.Module):
         return flattened_sample, flattened_logits
     
     @profile
-    def update(self, obs, action, reward, termination, is_first, global_step, epoch_step, logger=None, grad_accum_steps=1, do_step=True, zero_grad=False, reward_mean=0.0, reward_std=1e-5):
+    def update(self, obs, action, reward, termination, is_first, global_step, epoch_step, agent=None, logger=None, grad_accum_steps=1, do_step=True, zero_grad=False, reward_mean=0.0, reward_std=1e-5):
         self.train()
         if zero_grad:
             self.optimizer.zero_grad(set_to_none=True)
@@ -948,6 +948,7 @@ class WorldModel(nn.Module):
             post_logits = self.dist_head.forward_post(embedding)
             sample = self.stright_throught_gradient(post_logits, sample_mode="random_sample")
             flattened_sample = self.flatten_sample(sample)
+            flattened_logits = rearrange(post_logits, "B L K C -> B L (K C)") # [추가] HashLoss용 연속 확률
 
             obs_hat = self.image_decoder(flattened_sample)
 
@@ -1008,13 +1009,32 @@ class WorldModel(nn.Module):
                 if valid_steps > 0:
                     contrastive_acc = contrastive_acc / valid_steps
 
+            # --- [추가] RL Agent의 Value Function을 활용한 1-Step TD-Error 정밀 계산 ---
+            td_error = None
+            if self.important_info_hash_loss.trigger_type == "td_error":
+                if agent is not None:
+                    with torch.no_grad():
+                        agent_input = torch.cat([flattened_sample, dist_feat], dim=-1)
+                        values = agent.value(agent_input) # (B, L)
+                        gamma = getattr(agent, 'gamma', 0.985)
+                        
+                        td_error = torch.zeros_like(reward)
+                        # delta_t = r_t + gamma * V_{t+1} * (1 - done_t) - V_t
+                        td_error[:, :-1] = reward[:, :-1] + gamma * values[:, 1:] * (1 - termination[:, :-1]) - values[:, :-1]
+                        td_error[:, -1] = reward[:, -1] - values[:, -1] # 시퀀스 마지막 꼬리 부분 근사
+                else:
+                    raise ValueError("TriggerType이 'td_error'로 설정되었으나, WorldModel.update 메서드에 agent 객체가 전달되지 않았습니다.")
+            # -----------------------------------------------------------------------
+
             important_hash_loss = self.important_info_hash_loss(
                 obs=obs,
                 latent=flattened_sample,
+                logits=flattened_logits, # [수정] 이전에 놓쳤던 logits 인자 전달
                 reward=reward,
-                encode_fn=self.encode_obs_and_logits, # [수정] 이중 반환 함수로 교체
+                encode_fn=self.encode_obs_and_logits,
                 reward_mean=reward_mean,
-                reward_std=reward_std
+                reward_std=reward_std,
+                td_error=td_error # [추가] 계산된 TD-Error 전달
             )
 
             reward_hat = self.reward_decoder(dist_feat)
@@ -1026,14 +1046,12 @@ class WorldModel(nn.Module):
             dynamics_loss, dynamics_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:].detach(), prior_logits[:, :-1])
             representation_loss, representation_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:], prior_logits[:, :-1].detach())
             
-            # --- Dynamic Loss Harmonization (카테고리 기반 분기) ---
             if self.enable_dynamic_loss:
                 losses_dict = {
                     'reconstruction': (reconstruction_loss, self.loss_categories.get('reconstruction', 'core_dense')),
                     'dynamics': (dynamics_loss, self.loss_categories.get('dynamics', 'core_dense')),
                     'reward': (reward_loss, self.loss_categories.get('reward', 'sparse')),
                     'termination': (termination_loss, self.loss_categories.get('termination', 'sparse')),
-                    # 기존에 하드코딩했던 0.1을 빼고 원본 Loss 그대로 전달
                     'representation': (representation_loss, self.loss_categories.get('representation', 'aux_dense')), 
                     'contrastive': (contrastive_loss, self.loss_categories.get('contrastive', 'aux_dense')),
                     'important_hash': (important_hash_loss, self.loss_categories.get('important_hash', 'sparse'))
@@ -1041,7 +1059,6 @@ class WorldModel(nn.Module):
 
                 dynamic_weights = {}
                 for name, (loss_tensor, category) in losses_dict.items():
-                    # sparse 로스로 분류된 경우 조화 연산(EMA 및 비율 조정)을 완전히 건너뛰고 1.0 유지
                     if category == 'sparse':
                         dynamic_weights[name] = 1.0
                         continue
@@ -1052,25 +1069,19 @@ class WorldModel(nn.Module):
                         dynamic_weights[name] = 1.0
                         continue
 
-                    # 타겟 스케일 설정 (core는 1.0, aux는 0.5)
                     target_scale = 1.0 if category == 'core_dense' else 0.5
 
                     if name not in self.loss_ema:
                         self.loss_ema[name] = loss_val
-                        # 초기 가중치는 타겟을 초기 loss로 나눈 값으로 설정
                         self.weight_ema[name] = target_scale / (loss_val + 1e-8)
 
-                    # 밀집(Dense) 로스에 대해서만 EMA를 추적하고 업데이트
                     self.loss_ema[name] = self.harmonize_beta * self.loss_ema[name] + (1 - self.harmonize_beta) * loss_val
 
-                    # [핵심 수정] 목표 스케일(1.0 또는 0.5)을 Loss의 이동평균으로 나누어 이상적인 가중치(w) 도출
                     ideal_weight = target_scale / (self.loss_ema[name] + 1e-8)
 
-                    # 가중치 자체가 너무 급변하지 않도록 가중치 전용 EMA 적용
                     self.weight_ema[name] = self.weight_beta * self.weight_ema[name] + (1 - self.weight_beta) * ideal_weight
                     dynamic_weights[name] = self.weight_ema[name]
 
-                # total_loss 계산 (representation에 곱하던 수동 0.1 제거. dynamic_weights가 알아서 0.5로 맞춰줌)
                 total_loss = (
                     dynamic_weights['reconstruction'] * reconstruction_loss +
                     dynamic_weights['reward'] * reward_loss +
@@ -1083,7 +1094,6 @@ class WorldModel(nn.Module):
                 
                 if logger is not None and do_step:
                     for name, weight in dynamic_weights.items():
-                        # sparse 로스는 로깅에서 고정된 1.0 값을 볼 수 있습니다.
                         logger.log(f"Dynamic_Weights/{name}", weight, global_step=global_step)
                     for name, ema_val in self.loss_ema.items():
                         logger.log(f"Dynamic_Loss_EMA/{name}", ema_val, global_step=global_step)
@@ -1097,7 +1107,6 @@ class WorldModel(nn.Module):
                     contrastive_loss +
                     important_hash_loss
                 )
-            # --- Dynamic Loss Harmonization 끝 ---
 
         loss_scale = 1.0 / max(1, int(grad_accum_steps))
         self.scaler.scale(total_loss * loss_scale).backward()

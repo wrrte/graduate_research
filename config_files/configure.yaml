@@ -96,9 +96,10 @@ Models:
       CropRatio: [0.9, 1.1]
     ImportantInfoHashLoss:
       Enable: false
-      SigmaThreshold: 2.0       # [추가] 1.5로 낮추면 더 자주 트리거되고, 3.0으로 높이면 아주 희귀한 경우만 처리합니다.
-      HashBits: 13              # 기존 12에서 13 또는 14로 변경 (해시 공간 확대)
-      MaxQueuePerKey: 100000    # 기존 8에서 100000으로 변경 (버퍼 전체 저장 허용)
+      TriggerType: td_error         # [추가] 트리거 방식을 'reward' 또는 'td_error'로 설정합니다. store trigger가 아닌 loss 계산 트리거입니다.
+      SigmaThreshold: 2.0
+      HashBits: 13
+      MaxQueuePerKey: 100000
       MaxPastSamples: 32
       MaxPairsPerBatch: 256
       LossScale: 0.01

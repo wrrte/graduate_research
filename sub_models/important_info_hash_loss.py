@@ -10,6 +10,9 @@ class ImportantInfoHashLoss(nn.Module):
         cfg = config or {}
         self.enabled = bool(cfg.get("Enable", False))
         
+        # [추가] TriggerType 설정 (reward 또는 td_error)
+        self.trigger_type = str(cfg.get("TriggerType", "reward")).lower()
+        
         # [수정] RewardThreshold 대신 SigmaThreshold를 설정에서 읽어옴 (기본값 2.0)
         self.sigma_threshold = float(cfg.get("SigmaThreshold", 2.0))
         
@@ -18,7 +21,7 @@ class ImportantInfoHashLoss(nn.Module):
         self.max_past_samples = int(cfg.get("MaxPastSamples", 4))
         self.max_pairs_per_batch = int(cfg.get("MaxPairsPerBatch", 256))
         self.loss_scale = float(cfg.get("LossScale", 1.0))
-        self.store_only_triggered = bool(cfg.get("StoreOnlyTriggered", True))
+        self.store_only_triggered = bool(cfg.get("StoreOnlyTriggered", False))
 
         if self.hash_bits < 1 or self.hash_bits > 62:
             raise ValueError(f"HashBits must be in [1, 62], got {self.hash_bits}.")
@@ -32,6 +35,33 @@ class ImportantInfoHashLoss(nn.Module):
         self.register_buffer("hash_bit_values", bit_values, persistent=False)
 
         self.hash_memory = {}
+        
+        # [추가] TD-Error의 웰포드 알고리즘 연산을 위한 버퍼 등록
+        if self.trigger_type == "td_error":
+            self.register_buffer("td_error_mean", torch.tensor(0.0, dtype=torch.float32))
+            self.register_buffer("td_error_var", torch.tensor(1.0, dtype=torch.float32))
+            self.register_buffer("td_error_count", torch.tensor(1e-4, dtype=torch.float32))
+
+    # [추가] 웰포드 알고리즘을 통한 평균 및 분산 업데이트
+    def _update_welford(self, td_error):
+        batch_mean = torch.mean(td_error)
+        batch_var = torch.var(td_error, unbiased=False)
+        batch_count = torch.tensor(td_error.numel(), dtype=torch.float32, device=td_error.device)
+
+        delta = batch_mean - self.td_error_mean
+        tot_count = self.td_error_count + batch_count
+
+        new_mean = self.td_error_mean + delta * batch_count / tot_count
+        m_a = self.td_error_var * self.td_error_count
+        m_b = batch_var * batch_count
+        M2 = m_a + m_b + (delta ** 2) * self.td_error_count * batch_count / tot_count
+        new_var = M2 / tot_count
+
+        self.td_error_mean.copy_(new_mean)
+        self.td_error_var.copy_(new_var)
+        self.td_error_count.copy_(tot_count)
+
+        return self.td_error_mean, self.td_error_var
 
     def _hash_keys(self, latent):
         if latent.numel() == 0:
@@ -42,14 +72,19 @@ class ImportantInfoHashLoss(nn.Module):
         keys = (bits.to(torch.int64) * bit_values).sum(dim=-1)
         return keys.detach().cpu().tolist()
 
-    def _update_memory(self, obs, reward, latent, reward_mean, reward_std):
+    # [수정] 인자에 td_error 추가
+    def _update_memory(self, obs, reward, latent, reward_mean, reward_std, td_error=None):
         if not self.enabled:
             return
         if obs.numel() == 0:
             return
 
         if self.store_only_triggered:
-            store_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
+            if self.trigger_type == "td_error" and td_error is not None:
+                td_std = torch.sqrt(self.td_error_var + 1e-8)
+                store_mask = torch.abs(td_error - self.td_error_mean) >= self.sigma_threshold * td_std
+            else:
+                store_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
         else:
             store_mask = torch.ones_like(reward, dtype=torch.bool)
 
@@ -74,8 +109,8 @@ class ImportantInfoHashLoss(nn.Module):
                 self.hash_memory[key] = queue
             queue.append((obs_item, float(reward_item)))
 
-    # [수정] 2번 최적화 적용: 이미 계산된 연속 확률(logits)을 직접 인자로 넘겨받음
-    def forward(self, obs, latent, logits, reward, encode_fn, reward_mean, reward_std):
+    # [수정] 2번 최적화 적용: 이미 계산된 연속 확률(logits)을 직접 인자로 넘겨받음 및 td_error 인자 추가
+    def forward(self, obs, latent, logits, reward, encode_fn, reward_mean, reward_std, td_error=None):
         import random  # 무작위 샘플링을 위해 추가
 
         if not self.enabled:
@@ -83,9 +118,19 @@ class ImportantInfoHashLoss(nn.Module):
         if obs.numel() == 0:
             return latent.new_tensor(0.0)
 
-        trigger_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
+        # [수정] config의 TriggerType에 따른 조건부 트리거 마스크 생성
+        if self.trigger_type == "td_error":
+            if td_error is None:
+                raise ValueError("TriggerType이 'td_error'일 경우 forward에 td_error를 반드시 전달해야 합니다.")
+            # 웰포드 방정식으로 통계량 업데이트
+            td_mean, td_var = self._update_welford(td_error.detach())
+            td_std = torch.sqrt(td_var + 1e-8)
+            trigger_mask = torch.abs(td_error - td_mean) >= self.sigma_threshold * td_std
+        else:
+            trigger_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
+
         if not torch.any(trigger_mask) or not self.hash_memory:
-            self._update_memory(obs, reward, latent, reward_mean, reward_std)
+            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error)
             return latent.new_tensor(0.0)
 
         latent_trigger = latent[trigger_mask]
@@ -136,7 +181,7 @@ class ImportantInfoHashLoss(nn.Module):
                 break
 
         if pair_count == 0:
-            self._update_memory(obs, reward, latent, reward_mean, reward_std)
+            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error)
             return latent.new_tensor(0.0)
 
         past_obs = torch.stack(past_obs_list, dim=0)
@@ -171,5 +216,5 @@ class ImportantInfoHashLoss(nn.Module):
         cosine_sim = F.cosine_similarity(curr_logits, past_logits, dim=-1, eps=1e-8)
         loss = (reward_diff * cosine_sim).mean() * self.loss_scale
 
-        self._update_memory(obs, reward, latent, reward_mean, reward_std)
+        self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error)
         return loss
