@@ -74,7 +74,7 @@ class ImportantInfoHashLoss(nn.Module):
                 self.hash_memory[key] = queue
             queue.append((obs_item, float(reward_item)))
 
-    def forward(self, obs, latent, reward, encode_fn, reward_mean, reward_std):
+    def forward(self, obs, latent, reward, encode_logits_fn, reward_mean, reward_std):
         import random  # 무작위 샘플링을 위해 추가
 
         if not self.enabled:
@@ -89,11 +89,15 @@ class ImportantInfoHashLoss(nn.Module):
 
         latent_trigger = latent[trigger_mask]
         reward_trigger = reward[trigger_mask]
+        # [수정] Logits 추출을 위해 현재 시점의 obs 데이터 확보
+        obs_trigger = obs[trigger_mask]
+        
+        # 해싱(Hashing)은 군집화를 위해 기존의 이산 노이즈(latent)를 그대로 사용
         keys = self._hash_keys(latent_trigger.detach())
 
         past_obs_list = []
         past_reward_list = []
-        curr_latent_list = []
+        curr_obs_list = [] # [수정] latent 대신 obs를 수집
         curr_reward_list = []
         pair_count = 0
 
@@ -112,7 +116,7 @@ class ImportantInfoHashLoss(nn.Module):
             for obs_item, reward_item in entries:
                 past_obs_list.append(obs_item)
                 past_reward_list.append(reward_item)
-                curr_latent_list.append(latent_trigger[idx])
+                curr_obs_list.append(obs_trigger[idx]) # [수정] 매칭된 현재 obs 기록
                 curr_reward_list.append(reward_trigger[idx])
                 pair_count += 1
                 if pair_count >= self.max_pairs_per_batch:
@@ -127,14 +131,24 @@ class ImportantInfoHashLoss(nn.Module):
         past_obs = torch.stack(past_obs_list, dim=0)
         past_obs = past_obs.to(device=latent.device, dtype=latent.dtype) / 255.0
         past_obs = past_obs.unsqueeze(1)
-        past_latent = encode_fn(past_obs).squeeze(1)
+        
+        curr_obs = torch.stack(curr_obs_list, dim=0)
+        curr_obs = curr_obs.unsqueeze(1)
 
-        curr_latent = torch.stack(curr_latent_list, dim=0)
+        # [수정] 3번 적용: 샘플링된 이산 노이즈(latent) 대신 Logits를 직접 인코딩
+        past_logits = encode_logits_fn(past_obs).squeeze(1)
+        curr_logits = encode_logits_fn(curr_obs).squeeze(1)
+
+        # [수정] 2번 적용: 과거 표상은 움직이지 않는 닻(Anchor) 역할을 하도록 역전파(Gradient) 완벽 차단
+        past_logits = past_logits.detach()
+
         curr_reward = torch.stack(curr_reward_list, dim=0)
         past_reward = torch.tensor(past_reward_list, device=latent.device, dtype=curr_reward.dtype)
 
         reward_diff = torch.abs(curr_reward - past_reward)
-        cosine_sim = F.cosine_similarity(curr_latent, past_latent, dim=-1, eps=1e-8)
+        
+        # [수정] 3번 적용: 이산 노이즈가 제거된 Logits를 사용하여 코사인 유사도 계산
+        cosine_sim = F.cosine_similarity(curr_logits, past_logits, dim=-1, eps=1e-8)
         loss = (reward_diff * cosine_sim).mean() * self.loss_scale
 
         self._update_memory(obs, reward, latent, reward_mean, reward_std)
