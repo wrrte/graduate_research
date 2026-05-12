@@ -1015,17 +1015,18 @@ class WorldModel(nn.Module):
                 if agent is not None:
                     with torch.no_grad():
                         agent_input = torch.cat([flattened_sample, dist_feat], dim=-1)
-                        values = agent.value(agent_input) # (B, L)
+                        values = agent.value(agent_input) 
                         gamma = getattr(agent, 'gamma', 0.985)
                         
-                        # [수정] 1번 버그 픽스: (B, L, 1) 형태가 브로드캐스팅 팽창을 일으키지 않도록 Squeeze
+                        # [수정] 차원 폭발(Broadcasting Explosion) 원천 차단을 위한 모든 텐서 Squeeze 방어
                         reward_sq = reward.squeeze(-1) if reward.dim() == 3 else reward
                         term_sq = termination.squeeze(-1) if termination.dim() == 3 else termination
+                        values_sq = values.squeeze(-1) if values.dim() == 3 else values
                         
                         td_error = torch.zeros_like(reward_sq)
                         # delta_t = r_t + gamma * V_{t+1} * (1 - done_t) - V_t
-                        td_error[:, :-1] = reward_sq[:, :-1] + gamma * values[:, 1:] * (1 - term_sq[:, :-1]) - values[:, :-1]
-                        td_error[:, -1] = reward_sq[:, -1] - values[:, -1] # 시퀀스 마지막 꼬리 부분 근사
+                        td_error[:, :-1] = reward_sq[:, :-1] + gamma * values_sq[:, 1:] * (1 - term_sq[:, :-1]) - values_sq[:, :-1]
+                        td_error[:, -1] = reward_sq[:, -1] - values_sq[:, -1] # 시퀀스 마지막 꼬리 부분 근사
                 else:
                     raise ValueError("TriggerType이 'td_error'로 설정되었으나, WorldModel.update 메서드에 agent 객체가 전달되지 않았습니다.")
             # -----------------------------------------------------------------------
@@ -1033,12 +1034,12 @@ class WorldModel(nn.Module):
             important_hash_loss = self.important_info_hash_loss(
                 obs=obs,
                 latent=flattened_sample,
-                logits=flattened_logits, # [수정] 이전에 놓쳤던 logits 인자 전달
+                logits=flattened_logits,
                 reward=reward,
                 encode_fn=self.encode_obs_and_logits,
                 reward_mean=reward_mean,
                 reward_std=reward_std,
-                td_error=td_error # [추가] 계산된 TD-Error 전달
+                td_error=td_error 
             )
 
             reward_hat = self.reward_decoder(dist_feat)
