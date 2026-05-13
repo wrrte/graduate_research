@@ -73,11 +73,11 @@ class ReplayBuffer():
 
             # 2. 혼합 배치 샘플링
             demo_size = getattr(self, 'protect_size', 0)
-            demo_valid_size = demo_size - batch_length if demo_size > batch_length else 0
+            # [수정 3] Off-by-One 에러 수정 (+1 추가)
+            demo_valid_size = demo_size - batch_length + 1 if demo_size >= batch_length else 0
 
             if demo_valid_size > 0 and valid_length > demo_valid_size:
                 demo_prob_mass = probabilities[:demo_valid_size].sum().item()
-                # [수정] yaml에서 불러온 self.demo_ratio 값을 사용합니다.
                 target_demo_ratio = max(self.demo_ratio, demo_prob_mass)
                 
                 num_demo_samples = int(batch_size * target_demo_ratio)
@@ -142,11 +142,11 @@ class ReplayBuffer():
 
                 # 2. 혼합 배치 샘플링
                 demo_size = getattr(self, 'protect_size', 0)
-                demo_valid_size = demo_size - batch_length if demo_size > batch_length else 0
+                # [수정 3] Off-by-One 에러 수정 (+1 추가)
+                demo_valid_size = demo_size - batch_length + 1 if demo_size >= batch_length else 0
 
                 if demo_valid_size > 0 and valid_length > demo_valid_size:
                     demo_prob_mass = probabilities[:demo_valid_size].sum()
-                    # [수정] yaml에서 불러온 self.demo_ratio 값을 사용합니다.
                     target_demo_ratio = max(self.demo_ratio, demo_prob_mass)
                     
                     num_demo_samples = int(batch_size * target_demo_ratio)
@@ -208,12 +208,12 @@ class ReplayBuffer():
         return obs, action, reward, termination, is_first
 
     def append(self, obs, action, reward, termination, is_first):
-        # [수정] max_length 도달 시 포인터가 0이 아닌 protect_size로 회귀하도록 설정
-        protect_idx = getattr(self, 'protect_size', 0)
+        # [수정 1, 2] Atari 100k 환경에 맞춰 버퍼가 가득 차면 데이터를 버림으로써 랩어라운드 및 인덱스 에러 원천 차단
+        if self.length >= self.max_length:
+            return
+
         self.last_pointer += 1
-        if self.last_pointer >= self.max_length:
-            self.last_pointer = protect_idx
-            
+        
         if self.store_on_gpu:
             self.obs_buffer[self.last_pointer] = torch.from_numpy(obs)
             self.action_buffer[self.last_pointer] = torch.tensor(action, device=self.device)
@@ -227,8 +227,7 @@ class ReplayBuffer():
             self.termination_buffer[self.last_pointer] = termination
             self.is_first_buffer[self.last_pointer] = is_first
 
-        if len(self) < self.max_length:
-            self.length += 1
+        self.length += 1
 
         # Welford's online algorithm을 이용한 보상 통계 갱신
         self.reward_count += 1
