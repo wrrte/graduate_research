@@ -857,10 +857,11 @@ if __name__ == "__main__":
     # (global_step % TrainEverySteps == 0 연산이 어긋나서 학습이 멈추는 치명적인 버그 방지)
     num_envs = int(config.JointTrainAgent.NumEnvs)
     demo_steps = (demo_steps // num_envs) * num_envs
+    
+    # [추가] 리플레이 버퍼에 데모 데이터를 덮어쓰지 않도록 보호 구역 크기 설정
+    replay_buffer.protect_size = demo_steps
 
     # train (인자에 demo_steps 전달)
     joint_train_world_model_agent(config, logdir, replay_buffer, world_model, agent, logger, demo_steps=demo_steps)
 
     logger.close()
-
-# CUDA_VISIBLE_DEVICES=2 python train.py --Wandb.Init.Mode disabled

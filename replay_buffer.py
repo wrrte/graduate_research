@@ -208,7 +208,12 @@ class ReplayBuffer():
         return obs, action, reward, termination, is_first
 
     def append(self, obs, action, reward, termination, is_first):
-        self.last_pointer = (self.last_pointer + 1) % (self.max_length)
+        # [수정] max_length 도달 시 포인터가 0이 아닌 protect_size로 회귀하도록 설정
+        protect_idx = getattr(self, 'protect_size', 0)
+        self.last_pointer += 1
+        if self.last_pointer >= self.max_length:
+            self.last_pointer = protect_idx
+            
         if self.store_on_gpu:
             self.obs_buffer[self.last_pointer] = torch.from_numpy(obs)
             self.action_buffer[self.last_pointer] = torch.tensor(action, device=self.device)
