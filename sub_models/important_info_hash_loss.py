@@ -88,7 +88,10 @@ class ImportantInfoHashLoss(nn.Module):
             td_error = td_error.squeeze(-1)
 
         if self.store_only_triggered:
-            if self.trigger_type == "td_error" and td_error is not None:
+            if self.trigger_type == "td_error":
+                # [추가] td_error가 None일 때의 예외 처리 추가 (forward와 일관성 유지)
+                if td_error is None:
+                    raise ValueError("TriggerType이 'td_error'일 경우 _update_memory에도 td_error를 전달해야 합니다.")
                 # [수정] 2번 에러 픽스: 비교 연산 시에도 float32 적용
                 td_error_float = td_error.to(torch.float32)
                 td_std = torch.sqrt(self.td_error_var + 1e-8)
@@ -123,7 +126,7 @@ class ImportantInfoHashLoss(nn.Module):
 
     # [수정] 2번 최적화 적용 및 2번 버그(NxN 차원 팽창) 방지를 위한 Squeeze 적용, ReplayBuffer 연동
     def forward(self, obs, latent, logits, reward, encode_fn, reward_mean, reward_std, td_error=None, indexes=None, replay_buffer=None):
-        import random  # 무작위 샘플링을 위해 추가
+        import random  # 무작위 샘플링을 위해 추가 (주의: 모듈 최상단으로 옮기는 것을 강력히 권장합니다)
 
         if not self.enabled:
             return latent.new_tensor(0.0)
@@ -245,7 +248,11 @@ class ImportantInfoHashLoss(nn.Module):
         reward_diff = torch.abs(curr_reward - past_reward)
         # [수정] 노이즈가 제거된 logits를 사용하여 코사인 유사도 정밀 계산
         cosine_sim = F.cosine_similarity(curr_logits, past_logits, dim=-1, eps=1e-8)
-        loss = (reward_diff * cosine_sim).mean() * self.loss_scale
+        
+        # [수정] Margin 기반 척력 설계: 보상이 다를 때 표상을 무한히(-1) 밀어내지 않고 직교(0)까지만 밀어냄. 
+        # 보상이 같으면(reward_diff=0) Loss는 0이 되어, 다른 모듈의 구조화에 간섭하지 않음.
+        margin = 0.0
+        loss = (reward_diff * F.relu(cosine_sim - margin)).mean() * self.loss_scale
 
         self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, indexes)
         return loss
