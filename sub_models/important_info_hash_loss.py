@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from collections import deque
-
+from einops import rearrange # [추가] 실시간 이미지 텐서 조립을 위해 추가
 
 class ImportantInfoHashLoss(nn.Module):
     def __init__(self, latent_dim, config):
@@ -74,9 +74,9 @@ class ImportantInfoHashLoss(nn.Module):
         keys = (bits.to(torch.int64) * bit_values).sum(dim=-1)
         return keys.detach().cpu().tolist()
 
-    # [수정] 인자에 td_error 추가 및 차원 Squeeze
-    def _update_memory(self, obs, reward, latent, reward_mean, reward_std, td_error=None):
-        if not self.enabled:
+    # [수정] obs 대신 ReplayBuffer 인덱스 저장으로 변경
+    def _update_memory(self, obs, reward, latent, reward_mean, reward_std, td_error=None, indexes=None):
+        if not self.enabled or indexes None:
             return
         if obs.numel() == 0:
             return
@@ -101,26 +101,28 @@ class ImportantInfoHashLoss(nn.Module):
         if not torch.any(store_mask):
             return
 
-        obs_uint8 = torch.clamp(obs.detach() * 255.0, 0, 255).to(torch.uint8).cpu()
+        indexes_cpu = indexes.detach().cpu()
         reward_cpu = reward.detach().cpu()
         store_mask_cpu = store_mask.detach().cpu()
+        
         latent_masked = latent.detach()[store_mask]
         keys = self._hash_keys(latent_masked)
         if not keys:
             return
 
-        obs_items = obs_uint8[store_mask_cpu]
+        index_items = indexes_cpu[store_mask_cpu]
         reward_items = reward_cpu[store_mask_cpu]
 
-        for key, obs_item, reward_item in zip(keys, obs_items, reward_items):
+        # [수정] 이미지 텐서가 아닌 정수 인덱스만 큐에 기록
+        for key, index_item, reward_item in zip(keys, index_items, reward_items):
             queue = self.hash_memory.get(key)
             if queue is None:
                 queue = deque(maxlen=self.max_queue_per_key)
                 self.hash_memory[key] = queue
-            queue.append((obs_item, float(reward_item)))
+            queue.append((int(index_item), float(reward_item)))
 
-    # [수정] 2번 최적화 적용 및 2번 버그(NxN 차원 팽창) 방지를 위한 Squeeze 적용
-    def forward(self, obs, latent, logits, reward, encode_fn, reward_mean, reward_std, td_error=None):
+    # [수정] 2번 최적화 적용 및 2번 버그(NxN 차원 팽창) 방지를 위한 Squeeze 적용, ReplayBuffer 연동
+    def forward(self, obs, latent, logits, reward, encode_fn, reward_mean, reward_std, td_error=None, indexes=None, replay_buffer=None):
         import random  # 무작위 샘플링을 위해 추가
 
         if not self.enabled:
@@ -148,7 +150,7 @@ class ImportantInfoHashLoss(nn.Module):
             trigger_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
 
         if not torch.any(trigger_mask) or not self.hash_memory:
-            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error)
+            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, indexes)
             return latent.new_tensor(0.0)
 
         latent_trigger = latent[trigger_mask]
@@ -156,7 +158,7 @@ class ImportantInfoHashLoss(nn.Module):
         logits_trigger = logits[trigger_mask] # [수정] 재계산을 막기 위해 미리 뽑아둔 로짓 활용
         keys = self._hash_keys(latent_trigger.detach())
 
-        past_obs_list = []
+        past_index_list = []
         past_reward_list = []
         curr_logits_list = [] # [수정] obs 대신 logits 수집
         curr_reward_list = []
@@ -187,8 +189,8 @@ class ImportantInfoHashLoss(nn.Module):
             new_queue = deque([e for e in queue if id(e) not in entries_ids], maxlen=self.max_queue_per_key)
             self.hash_memory[key] = new_queue
 
-            for obs_item, reward_item in entries:
-                past_obs_list.append(obs_item)
+            for index_item, reward_item in entries:
+                past_index_list.append(index_item)
                 past_reward_list.append(reward_item)
                 curr_logits_list.append(logits_trigger[idx]) # [수정] 추가 인코딩 없이 로짓 담기
                 curr_reward_list.append(reward_trigger[idx])
@@ -199,12 +201,21 @@ class ImportantInfoHashLoss(nn.Module):
                 break
 
         if pair_count == 0:
-            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error)
+            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, indexes)
             return latent.new_tensor(0.0)
 
-        past_obs = torch.stack(past_obs_list, dim=0)
-        past_obs = past_obs.to(device=latent.device, dtype=latent.dtype) / 255.0
-        past_obs = past_obs.unsqueeze(1)
+        if replay_buffer is None:
+            raise ValueError("replay_buffer is required to fetch past observations.")
+
+        # [추가] 저장해둔 인덱스를 기반으로 버퍼에서 직접 최신화된 과거 이미지 텐서들을 꺼내옴
+        if replay_buffer.store_on_gpu:
+            past_obs_raw = replay_buffer.obs_buffer[past_index_list]
+        else:
+            past_obs_raw = torch.from_numpy(replay_buffer.obs_buffer[past_index_list])
+            
+        past_obs = past_obs_raw.to(device=latent.device, dtype=latent.dtype) / 255.0
+        # ReplayBuffer에 담긴 Shape(N, H, W, C)를 Encoder 입력용 Shape(N, 1, C, H, W)로 변환
+        past_obs = rearrange(past_obs, "N H W C -> N 1 C H W")
         
         # [수정] curr_obs를 다시 CNN에 넣을 필요 없이 모아둔 로짓 바로 사용
         curr_logits = torch.stack(curr_logits_list, dim=0)
@@ -224,7 +235,8 @@ class ImportantInfoHashLoss(nn.Module):
             if target_queue is None:
                 target_queue = deque(maxlen=self.max_queue_per_key)
                 self.hash_memory[new_key] = target_queue
-            target_queue.append((past_obs_list[i], float(past_reward_list[i])))
+            # [수정] 다시 넣을 때도 이미지 대신 인덱스 보관
+            target_queue.append((past_index_list[i], float(past_reward_list[i])))
 
         # Squeeze가 적용되어 curr_reward는 (N,), past_reward도 (N,)이 됨
         curr_reward = torch.stack(curr_reward_list, dim=0)
@@ -235,5 +247,5 @@ class ImportantInfoHashLoss(nn.Module):
         cosine_sim = F.cosine_similarity(curr_logits, past_logits, dim=-1, eps=1e-8)
         loss = (reward_diff * cosine_sim).mean() * self.loss_scale
 
-        self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error)
+        self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, indexes)
         return loss

@@ -123,6 +123,7 @@ class ReplayBuffer():
             
         else:
             obs_list, action_list, reward_list, termination_list, is_first_list = [], [], [], [], []
+            indexes = np.empty((0, batch_length), dtype=np.int64)
 
             if batch_size > 0:
                 valid_length = self.length + 1 - batch_length
@@ -204,8 +205,10 @@ class ReplayBuffer():
             reward = torch.cat(reward_list, dim=0) if reward_list else torch.empty(0, device=self.device)
             termination = torch.cat(termination_list, dim=0) if termination_list else torch.empty(0, device=self.device)
             is_first = torch.cat(is_first_list, dim=0) if is_first_list else torch.empty(0, device=self.device)
+            
+            indexes = torch.from_numpy(indexes).to(self.device) if len(indexes) > 0 else torch.empty(0, device=self.device)
 
-        return obs, action, reward, termination, is_first
+        return obs, action, reward, termination, is_first, indexes
 
     def append(self, obs, action, reward, termination, is_first):
         # [수정 1, 2] Atari 100k 환경에 맞춰 버퍼가 가득 차면 데이터를 버림으로써 랩어라운드 및 인덱스 에러 원천 차단

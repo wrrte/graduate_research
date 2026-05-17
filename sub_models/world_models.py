@@ -938,7 +938,7 @@ class WorldModel(nn.Module):
         return flattened_sample, flattened_logits
     
     @profile
-    def update(self, obs, action, reward, termination, is_first, global_step, epoch_step, agent=None, logger=None, grad_accum_steps=1, do_step=True, zero_grad=False, reward_mean=0.0, reward_std=1e-5):
+    def update(self, obs, action, reward, termination, is_first, global_step, epoch_step, agent=None, logger=None, grad_accum_steps=1, do_step=True, zero_grad=False, reward_mean=0.0, reward_std=1e-5, indexes=None, replay_buffer=None):
         self.train()
         if zero_grad:
             self.optimizer.zero_grad(set_to_none=True)
@@ -1042,7 +1042,9 @@ class WorldModel(nn.Module):
                 encode_fn=self.encode_obs_and_logits,
                 reward_mean=reward_mean,
                 reward_std=reward_std,
-                td_error=td_error 
+                td_error=td_error,
+                indexes=indexes,           # 추가
+                replay_buffer=replay_buffer # 추가
             )
 
             reward_hat = self.reward_decoder(dist_feat)

@@ -24,8 +24,6 @@ from eval import eval_episodes
 import warnings
 import ast
 
-dummy_tensor = torch.zeros((40, 1024, 1024, 256), dtype=torch.float32, device='cuda')
-
 # Action IDs produced by play.py key mapping and their expected ALE meanings.
 PLAY_KEY_ACTION_MEANING = {
     0: "NOOP",
@@ -344,7 +342,7 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
 
     for e in range(epoch):
         for micro_step in range(accum_steps):
-            obs, action, reward, termination, is_first = replay_buffer.sample(
+            obs, action, reward, termination, is_first, indexes = replay_buffer.sample(
                 micro_batch_size, batch_length, imagine=False
             )
             do_step = micro_step == accum_steps - 1
@@ -362,7 +360,9 @@ def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel,
                 do_step=do_step,
                 zero_grad=micro_step == 0,
                 reward_mean=reward_mean,
-                reward_std=reward_std
+                reward_std=reward_std,
+                indexes=indexes, # 추가: 인덱스 전달
+                replay_buffer=replay_buffer # 추가: 리플레이 버퍼 전달
             )
 
             if len(outputs) == 11:
