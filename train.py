@@ -418,8 +418,9 @@ def world_model_imagine_data(replay_buffer: ReplayBuffer,
     '''
     world_model.eval()
     agent.eval()
-    sample_obs, sample_action, sample_reward, sample_termination, sample_is_first = replay_buffer.sample(
-        imagine_batch_size, imagine_context_length, imagine=True)
+    
+    # 6개의 반환값을 모두 받을 수 있도록 마지막에 `_` 를 추가하여 언패킹 에러를 해결합니다.
+    sample_obs, sample_action, sample_reward, sample_termination, sample_is_first, _ = replay_buffer.sample(imagine_batch_size, imagine_context_length, imagine=True)
     if world_model.model == 'Transformer':
         latent, action, old_logits, context_latent, reward_hat, termination_hat = world_model.imagine_data(
             agent, sample_obs, sample_action, sample_is_first,
