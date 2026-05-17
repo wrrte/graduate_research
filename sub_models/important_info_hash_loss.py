@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from collections import deque
 from einops import rearrange # [추가] 실시간 이미지 텐서 조립을 위해 추가
+import random # [RL 연구자 수정] 모듈 최상단으로 이동 (4번 지적 반영)
 
 class ImportantInfoHashLoss(nn.Module):
     def __init__(self, latent_dim, config):
@@ -38,17 +39,18 @@ class ImportantInfoHashLoss(nn.Module):
         
         # [추가] TD-Error의 웰포드 알고리즘 연산을 위한 버퍼 등록
         if self.trigger_type == "td_error":
-            self.register_buffer("td_error_mean", torch.tensor(0.0, dtype=torch.float32))
-            self.register_buffer("td_error_var", torch.tensor(1.0, dtype=torch.float32))
-            self.register_buffer("td_error_count", torch.tensor(1e-4, dtype=torch.float32))
+            # [RL 연구자 수정] 훈련이 길어질 경우 float32 정밀도 오버플로우(Truncation) 방지를 위해 float64 사용 (2번 지적 반영)
+            self.register_buffer("td_error_mean", torch.tensor(0.0, dtype=torch.float64))
+            self.register_buffer("td_error_var", torch.tensor(1.0, dtype=torch.float64))
+            self.register_buffer("td_error_count", torch.tensor(1e-4, dtype=torch.float64))
 
     # [추가] 웰포드 알고리즘을 통한 평균 및 분산 업데이트
     def _update_welford(self, td_error):
-        # [수정] 2번 에러 픽스: bfloat16의 정밀도 부족으로 인한 언더플로우/오버플로우 방지를 위해 float32 캐스팅
-        td_error = td_error.to(torch.float32)
-        batch_mean = torch.mean(td_error)
-        batch_var = torch.var(td_error, unbiased=False)
-        batch_count = torch.tensor(td_error.numel(), dtype=torch.float32, device=td_error.device)
+        # [수정] 2번 에러 픽스: bfloat16의 정밀도 부족으로 인한 언더플로우/오버플로우 방지를 위해 float64 캐스팅 (수정 강화)
+        td_error_64 = td_error.to(torch.float64)
+        batch_mean = torch.mean(td_error_64)
+        batch_var = torch.var(td_error_64, unbiased=False)
+        batch_count = torch.tensor(td_error.numel(), dtype=torch.float64, device=td_error.device)
 
         delta = batch_mean - self.td_error_mean
         tot_count = self.td_error_count + batch_count
@@ -63,7 +65,8 @@ class ImportantInfoHashLoss(nn.Module):
         self.td_error_var.copy_(new_var)
         self.td_error_count.copy_(tot_count)
 
-        return self.td_error_mean, self.td_error_var
+        # 모델 나머지 연산과 호환을 위해 float32로 변환하여 반환
+        return self.td_error_mean.to(torch.float32), self.td_error_var.to(torch.float32)
 
     def _hash_keys(self, latent):
         if latent.numel() == 0:
@@ -94,8 +97,8 @@ class ImportantInfoHashLoss(nn.Module):
                     raise ValueError("TriggerType이 'td_error'일 경우 _update_memory에도 td_error를 전달해야 합니다.")
                 # [수정] 2번 에러 픽스: 비교 연산 시에도 float32 적용
                 td_error_float = td_error.to(torch.float32)
-                td_std = torch.sqrt(self.td_error_var + 1e-8)
-                store_mask = torch.abs(td_error_float - self.td_error_mean) >= self.sigma_threshold * td_std
+                td_std = torch.sqrt(self.td_error_var.to(torch.float32) + 1e-8)
+                store_mask = torch.abs(td_error_float - self.td_error_mean.to(torch.float32)) >= self.sigma_threshold * td_std
             else:
                 store_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
         else:
@@ -126,8 +129,6 @@ class ImportantInfoHashLoss(nn.Module):
 
     # [수정] 2번 최적화 적용 및 2번 버그(NxN 차원 팽창) 방지를 위한 Squeeze 적용, ReplayBuffer 연동
     def forward(self, obs, latent, logits, reward, encode_fn, reward_mean, reward_std, td_error=None, indexes=None, replay_buffer=None):
-        import random  # 무작위 샘플링을 위해 추가 (주의: 모듈 최상단으로 옮기는 것을 강력히 권장합니다)
-
         if not self.enabled:
             return latent.new_tensor(0.0)
         if obs.numel() == 0:
@@ -223,9 +224,11 @@ class ImportantInfoHashLoss(nn.Module):
         # [수정] curr_obs를 다시 CNN에 넣을 필요 없이 모아둔 로짓 바로 사용
         curr_logits = torch.stack(curr_logits_list, dim=0)
 
-        # [수정] encode_fn은 (latent, logits) 튜플을 반환하여 방 배정용과 비교용을 분리 지원
-        past_latent, past_logits = encode_fn(past_obs)
-        past_latent, past_logits = past_latent.squeeze(1), past_logits.squeeze(1)
+        # [RL 연구자 수정] VRAM 메모리 누수 방지! 연산 그래프가 생성되지 않도록 반드시 no_grad 컨텍스트 안에서 실행 (1번 지적 반영)
+        with torch.no_grad():
+            # [수정] encode_fn은 (latent, logits) 튜플을 반환하여 방 배정용과 비교용을 분리 지원
+            past_latent, past_logits = encode_fn(past_obs)
+            past_latent, past_logits = past_latent.squeeze(1), past_logits.squeeze(1)
 
         # [수정] 과거 표상은 움직이지 않는 닻(Anchor) 역할을 하도록 역전파 완벽 차단
         past_latent = past_latent.detach()
