@@ -76,7 +76,7 @@ class ImportantInfoHashLoss(nn.Module):
 
     # [수정] obs 대신 ReplayBuffer 인덱스 저장으로 변경
     def _update_memory(self, obs, reward, latent, reward_mean, reward_std, td_error=None, indexes=None):
-        if not self.enabled or indexes None:
+        if not self.enabled or indexes is None:
             return
         if obs.numel() == 0:
             return
