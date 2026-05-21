@@ -84,13 +84,25 @@ class ReplayBuffer():
                 num_agent_samples = batch_size - num_demo_samples
                 
                 if num_demo_samples > 0:
-                    prob_demo = probabilities[:demo_valid_size] / probabilities[:demo_valid_size].sum()
+                    demo_probs = probabilities[:demo_valid_size]
+                    demo_sum = demo_probs.sum()
+                    # [추가] Zero-Division 방어: 확률 합이 극도로 작으면 균등 분포로 Fallback
+                    if demo_sum <= 1e-8:
+                        prob_demo = torch.ones_like(demo_probs) / demo_valid_size
+                    else:
+                        prob_demo = demo_probs / demo_sum
                     demo_indexes = torch.multinomial(prob_demo, num_demo_samples, replacement=True)
                 else:
                     demo_indexes = torch.empty(0, dtype=torch.long, device=self.device)
                     
                 if num_agent_samples > 0:
-                    prob_agent = probabilities[demo_valid_size:] / probabilities[demo_valid_size:].sum()
+                    agent_probs = probabilities[demo_valid_size:]
+                    agent_sum = agent_probs.sum()
+                    # [추가] Zero-Division 방어: 에이전트 데이터도 동일하게 보호
+                    if agent_sum <= 1e-8:
+                        prob_agent = torch.ones_like(agent_probs) / agent_probs.numel()
+                    else:
+                        prob_agent = agent_probs / agent_sum
                     agent_indexes = torch.multinomial(prob_agent, num_agent_samples, replacement=True) + demo_valid_size
                 else:
                     agent_indexes = torch.empty(0, dtype=torch.long, device=self.device)
@@ -154,14 +166,26 @@ class ReplayBuffer():
                     num_agent_samples = batch_size - num_demo_samples
                     
                     if num_demo_samples > 0:
-                        prob_demo = probabilities[:demo_valid_size] / probabilities[:demo_valid_size].sum()
+                        demo_probs = probabilities[:demo_valid_size]
+                        demo_sum = demo_probs.sum()
+                        # [추가] Zero-Division 방어 (CPU)
+                        if demo_sum <= 1e-8:
+                            prob_demo = np.ones_like(demo_probs) / demo_valid_size
+                        else:
+                            prob_demo = demo_probs / demo_sum
                         replace_demo = num_demo_samples > demo_valid_size
                         demo_indexes = np.random.choice(demo_valid_size, size=num_demo_samples, replace=replace_demo, p=prob_demo)
                     else:
                         demo_indexes = np.array([], dtype=np.int64)
                         
                     if num_agent_samples > 0:
-                        prob_agent = probabilities[demo_valid_size:] / probabilities[demo_valid_size:].sum()
+                        agent_probs = probabilities[demo_valid_size:]
+                        agent_sum = agent_probs.sum()
+                        # [추가] Zero-Division 방어 (CPU)
+                        if agent_sum <= 1e-8:
+                            prob_agent = np.ones_like(agent_probs) / len(agent_probs)
+                        else:
+                            prob_agent = agent_probs / agent_sum
                         replace_agent = num_agent_samples > len(prob_agent)
                         agent_indexes = np.random.choice(len(prob_agent), size=num_agent_samples, replace=replace_agent, p=prob_agent) + demo_valid_size
                     else:
