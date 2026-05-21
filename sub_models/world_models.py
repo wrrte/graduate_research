@@ -1009,7 +1009,7 @@ class WorldModel(nn.Module):
                 if valid_steps > 0:
                     contrastive_acc = contrastive_acc / valid_steps
 
-            # --- [수정] RL Agent의 Value Function을 활용한 Value & 1-Step TD-Error 정밀 계산 ---
+            # --- [수정] CRITICAL: 시점 정렬(Alignment) 버그 교정 완료 및 1-Step TD-Error 계산 ---
             td_error = None
             values_sq = None
             
@@ -1017,24 +1017,32 @@ class WorldModel(nn.Module):
                 trigger_type = getattr(self.important_info_hash_loss, 'trigger_type', 'reward')
                 diff_type = getattr(self.important_info_hash_loss, 'diff_type', 'reward')
                 
-                # [핵심 수정] "aux_value" 방식(대안 A)일 때도 Critic의 Value가 필요하도록 조건에 명시적으로 추가
                 needs_value = (diff_type in ["value", "td_error", "aux_value"]) or (trigger_type == "td_error")
                 needs_td_error = (diff_type == "td_error") or (trigger_type == "td_error")
 
                 if needs_value:
                     if agent is not None:
                         with torch.no_grad():
-                            agent_input = torch.cat([flattened_sample, dist_feat], dim=-1)
-                            values = agent.value(agent_input) 
+                            # 정렬 교정 핵심: dist_feat[:, :-1]은 h_1 ~ h_{L-1} 이고 flattened_sample[:, 1:]은 z_1 ~ z_{L-1} 입니다.
+                            # 이를 통해 에이전트가 학습된 규격 그대로 정렬된 [z_t, h_t] (t = 1 ~ L-1) 입력 쌍을 구축합니다.
+                            aligned_input = torch.cat([flattened_sample[:, 1:], dist_feat[:, :-1]], dim=-1)
+                            aligned_values = agent.value(aligned_input) 
                             gamma = getattr(agent, 'gamma', 0.985)
                             
                             reward_sq = reward.squeeze(-1) if reward.dim() == 3 else reward
                             term_sq = termination.squeeze(-1) if termination.dim() == 3 else termination
-                            values_sq = values.squeeze(-1) if values.dim() == 3 else values
+                            
+                            # 원래 배치 시퀀스 길이(L)와 동일한 차원의 버퍼를 생성하고 유효 스텝 데이터를 채웁니다.
+                            values_sq = torch.zeros_like(reward_sq)
+                            values_sq[:, 1:] = aligned_values.squeeze(-1) if aligned_values.dim() == 3 else aligned_values
                             
                             if needs_td_error:
                                 td_error = torch.zeros_like(reward_sq)
-                                td_error[:, :-1] = reward_sq[:, :-1] + gamma * values_sq[:, 1:] * (1 - term_sq[:, :-1]) - values_sq[:, :-1]
+                                # t = 1 부터 L-2 스텝까지 완벽히 정렬된 1-step TD-error를 계산합니다.
+                                # delta_t = r_t + gamma * V_{t+1} * (1 - done_t) - V_t
+                                td_error[:, 1:-1] = reward_sq[:, 1:-1] + gamma * values_sq[:, 2:] * (1 - term_sq[:, 1:-1]) - values_sq[:, 1:-1]
+                                # 정렬 한계선 및 미래 가치가 없는 구간인 t=0 과 t=L-1 은 명시적으로 0.0 마스킹합니다.
+                                td_error[:, 0] = 0.0
                                 td_error[:, -1] = 0.0
                     else:
                         raise ValueError(f"TriggerType('{trigger_type}')이나 DiffType('{diff_type}')을 계산하려면 WorldModel.update에 agent 객체가 전달되어야 합니다.")
