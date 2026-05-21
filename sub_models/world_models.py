@@ -1009,7 +1009,7 @@ class WorldModel(nn.Module):
                 if valid_steps > 0:
                     contrastive_acc = contrastive_acc / valid_steps
 
-            # --- [수정] CRITICAL: 시점 정렬(Alignment) 버그 교정 완료 및 1-Step TD-Error 계산 ---
+            # --- 시점 정렬(Alignment) 버그 교정 완료 및 1-Step TD-Error 계산 ---
             td_error = None
             values_sq = None
             
@@ -1024,7 +1024,6 @@ class WorldModel(nn.Module):
                     if agent is not None:
                         with torch.no_grad():
                             # 정렬 교정 핵심: dist_feat[:, :-1]은 h_1 ~ h_{L-1} 이고 flattened_sample[:, 1:]은 z_1 ~ z_{L-1} 입니다.
-                            # 이를 통해 에이전트가 학습된 규격 그대로 정렬된 [z_t, h_t] (t = 1 ~ L-1) 입력 쌍을 구축합니다.
                             aligned_input = torch.cat([flattened_sample[:, 1:], dist_feat[:, :-1]], dim=-1)
                             aligned_values = agent.value(aligned_input) 
                             gamma = getattr(agent, 'gamma', 0.985)
@@ -1032,16 +1031,12 @@ class WorldModel(nn.Module):
                             reward_sq = reward.squeeze(-1) if reward.dim() == 3 else reward
                             term_sq = termination.squeeze(-1) if termination.dim() == 3 else termination
                             
-                            # 원래 배치 시퀀스 길이(L)와 동일한 차원의 버퍼를 생성하고 유효 스텝 데이터를 채웁니다.
                             values_sq = torch.zeros_like(reward_sq)
                             values_sq[:, 1:] = aligned_values.squeeze(-1) if aligned_values.dim() == 3 else aligned_values
                             
                             if needs_td_error:
                                 td_error = torch.zeros_like(reward_sq)
-                                # t = 1 부터 L-2 스텝까지 완벽히 정렬된 1-step TD-error를 계산합니다.
-                                # delta_t = r_t + gamma * V_{t+1} * (1 - done_t) - V_t
                                 td_error[:, 1:-1] = reward_sq[:, 1:-1] + gamma * values_sq[:, 2:] * (1 - term_sq[:, 1:-1]) - values_sq[:, 1:-1]
-                                # 정렬 한계선 및 미래 가치가 없는 구간인 t=0 과 t=L-1 은 명시적으로 0.0 마스킹합니다.
                                 td_error[:, 0] = 0.0
                                 td_error[:, -1] = 0.0
                     else:

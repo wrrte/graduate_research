@@ -42,15 +42,11 @@ class ImportantInfoHashLoss(nn.Module):
         cfg = config or {}
         self.enabled = bool(cfg.get("Enable", False))
         
-        # TriggerType 설정 (reward 또는 td_error)
         self.trigger_type = str(cfg.get("TriggerType", "reward")).lower()
-        
-        # Contrastive 거리에 사용할 Metric 설정
         self.diff_type = str(cfg.get("DiffType", "reward")).lower()
         if self.diff_type not in ["reward", "td_error", "value", "aux_value"]:
             raise ValueError(f"DiffType must be 'reward', 'td_error', 'value', or 'aux_value', got {self.diff_type}")
             
-        # Stateless Value Distillation을 위한 보조 네트워크 (Mamba State 없이 오직 latent 표상으로만 가치 매핑)
         self.aux_value_net = nn.Sequential(
             nn.Linear(latent_dim, 512),
             nn.LayerNorm(512),
@@ -58,9 +54,7 @@ class ImportantInfoHashLoss(nn.Module):
             nn.Linear(512, 1)
         )
         
-        # RewardThreshold 대신 SigmaThreshold를 설정에서 읽어옴 (기본값 2.0)
         self.sigma_threshold = float(cfg.get("SigmaThreshold", 2.0))
-        
         self.hash_bits = int(cfg.get("HashBits", 12))
         self.max_queue_per_key = int(cfg.get("MaxQueuePerKey", 100000))
         self.max_past_samples = int(cfg.get("MaxPastSamples", 4))
@@ -81,7 +75,6 @@ class ImportantInfoHashLoss(nn.Module):
 
         self.hash_memory = {}
         
-        # TD-Error의 웰포드 알고리즘 연산을 위한 버퍼 등록
         if self.trigger_type == "td_error":
             self.register_buffer("td_error_mean", torch.tensor(0.0, dtype=torch.float64))
             self.register_buffer("td_error_var", torch.tensor(1.0, dtype=torch.float64))
@@ -121,7 +114,7 @@ class ImportantInfoHashLoss(nn.Module):
         keys = (bits.to(torch.int64) * bit_values).sum(dim=-1)
         return keys.detach().cpu().tolist()
 
-    def _update_memory(self, obs, reward, latent, reward_mean, reward_std, td_error=None, value=None, indexes=None):
+    def _update_memory(self, obs, reward, latent, reward_mean, reward_std, td_error=None, value=None, aux_value=None, indexes=None):
         if not self.enabled or indexes is None:
             return
         if obs.numel() == 0:
@@ -134,11 +127,11 @@ class ImportantInfoHashLoss(nn.Module):
         if value is not None and value.dim() == 3:
             value = value.squeeze(-1)
 
-        # [수정] 시점 정렬 교정으로 인해 V0 및 마스크를 알 수 없는 처음(0)과 마지막(-1) 스텝을 모두 마스킹 처리
-        valid_mask = torch.ones_like(reward, dtype=torch.bool)
-        if valid_mask.dim() >= 2:
-            valid_mask[..., 0] = False
-            valid_mask[..., -1] = False
+        # align_mask는 Critic의 값이 유효하지 않은 경계를 차단합니다.
+        align_mask = torch.ones_like(reward, dtype=torch.bool)
+        if align_mask.dim() >= 2:
+            align_mask[..., 0] = False
+            align_mask[..., -1] = False
 
         if self.store_only_triggered:
             if self.trigger_type == "td_error":
@@ -146,20 +139,23 @@ class ImportantInfoHashLoss(nn.Module):
                     raise ValueError("TriggerType이 'td_error'일 경우 _update_memory에도 td_error를 전달해야 합니다.")
                 td_error_float = td_error.to(torch.float32)
                 td_std = torch.sqrt(self.td_error_var.to(torch.float32) + 1e-8)
-                store_mask = torch.abs(td_error_float - self.td_error_mean.to(torch.float32)) >= self.sigma_threshold * td_std
+                # TD-Error는 경계에서 무효하므로 align_mask와 결합하여 오작동을 막습니다.
+                store_mask = (torch.abs(td_error_float - self.td_error_mean.to(torch.float32)) >= self.sigma_threshold * td_std) & align_mask
             else:
+                # Sparse 환경 방어: Reward 트리거는 경계에 구애받지 않으므로 전체 스텝(t=0 ~ L-1)을 온전히 살려냅니다.
                 store_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
         else:
             store_mask = torch.ones_like(reward, dtype=torch.bool)
-
-        store_mask = store_mask & valid_mask
 
         if not torch.any(store_mask):
             return
 
         if self.diff_type == "td_error":
             metric_to_store = td_error
-        elif self.diff_type in ["value", "aux_value"]:
+        elif self.diff_type == "aux_value":
+            # aux_value는 경계에서도 완벽히 유효하므로 손실 없이 저장 가능합니다.
+            metric_to_store = aux_value if aux_value is not None else self.aux_value_net(latent).squeeze(-1)
+        elif self.diff_type == "value":
             metric_to_store = value if value is not None else torch.zeros_like(reward)
         else:
             metric_to_store = reward
@@ -203,32 +199,34 @@ class ImportantInfoHashLoss(nn.Module):
         if value is not None and value.dim() == 3:
             value = value.squeeze(-1)
 
-        # [수정] 시점 정렬 교정으로 인해 정렬 영역을 벗어난 처음(0)과 마지막(-1) 스텝을 일괄 유효 통계에서 차단
-        valid_mask = torch.ones_like(reward, dtype=torch.bool)
-        if valid_mask.dim() >= 2:
-            valid_mask[..., 0] = False
-            valid_mask[..., -1] = False
+        # align_mask 분리. 오직 학습(Distillation) 및 TD통계에서 쓰레기값을 피하기 위해 사용.
+        align_mask = torch.ones_like(reward, dtype=torch.bool)
+        if align_mask.dim() >= 2:
+            align_mask[..., 0] = False
+            align_mask[..., -1] = False
 
         if value is not None:
             aux_value_all = self.aux_value_net(latent).squeeze(-1)
-            distill_loss = F.mse_loss(aux_value_all[valid_mask], value[valid_mask].detach())
+            # 증류 학습에는 정렬이 어긋난 경계값(0.0)이 들어가지 않도록 철저히 차단
+            distill_loss = F.mse_loss(aux_value_all[align_mask], value[align_mask].detach())
         else:
+            aux_value_all = None
             distill_loss = latent.new_tensor(0.0)
 
         if self.trigger_type == "td_error":
             if td_error is None:
                 raise ValueError("TriggerType이 'td_error'일 경우 forward에 td_error를 반드시 전달해야 합니다.")
             td_error_float = td_error.detach().to(torch.float32)
-            td_mean, td_var = self._update_welford(td_error_float, valid_mask)
+            # TD-Error Welford 업데이트도 정렬된 구간만 사용
+            td_mean, td_var = self._update_welford(td_error_float, align_mask)
             td_std = torch.sqrt(td_var + 1e-8)
-            trigger_mask = torch.abs(td_error_float - td_mean) >= self.sigma_threshold * td_std
+            trigger_mask = (torch.abs(td_error_float - td_mean) >= self.sigma_threshold * td_std) & align_mask
         else:
+            # Sparse 환경 방어: Reward는 경계에서도 살아있으므로 전체 프레임에서 트리거를 놓치지 않습니다.
             trigger_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
 
-        trigger_mask = trigger_mask & valid_mask
-
         if not torch.any(trigger_mask) or not self.hash_memory:
-            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, value, indexes)
+            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, value, aux_value_all, indexes)
             return distill_loss
 
         latent_trigger = latent[trigger_mask]
@@ -274,7 +272,7 @@ class ImportantInfoHashLoss(nn.Module):
                 break
 
         if pair_count == 0:
-            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, value, indexes)
+            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, value, aux_value_all, indexes)
             return distill_loss
 
         if replay_buffer is None:
@@ -319,5 +317,5 @@ class ImportantInfoHashLoss(nn.Module):
         margin = 0.0
         loss = (metric_diff * F.relu(cosine_sim - margin)).mean() * self.loss_scale + distill_loss
 
-        self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, value, indexes)
+        self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, value, aux_value_all, indexes)
         return loss
