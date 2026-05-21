@@ -80,6 +80,8 @@ class ImportantInfoHashLoss(nn.Module):
             self.register_buffer("td_error_var", torch.tensor(1.0, dtype=torch.float64))
             self.register_buffer("td_error_count", torch.tensor(1e-4, dtype=torch.float64))
 
+        self.register_buffer("running_max_metric", torch.tensor(1.0, dtype=torch.float32), persistent=False)
+
     def _update_welford(self, td_error, valid_mask):
         valid_td = td_error[valid_mask].to(torch.float64)
         
@@ -142,10 +144,10 @@ class ImportantInfoHashLoss(nn.Module):
                 # TD-Error는 경계에서 무효하므로 align_mask와 결합하여 오작동을 막습니다.
                 store_mask = (torch.abs(td_error_float - self.td_error_mean.to(torch.float32)) >= self.sigma_threshold * td_std) & align_mask
             else:
-                # Sparse 환경 방어: Reward 트리거는 경계에 구애받지 않으므로 전체 스텝(t=0 ~ L-1)을 온전히 살려냅니다.
-                store_mask = torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std
+                # Sparse 환경 방어: Reward 트리거는 경계에 구애받지 않으므로 전체 스텝(t=0 ~ L-1)을 온전히 살려냅니다. => align_mask 추가
+                store_mask = (torch.abs(reward - reward_mean) >= self.sigma_threshold * reward_std) & align_mask
         else:
-            store_mask = torch.ones_like(reward, dtype=torch.bool)
+            store_mask = align_mask
 
         if not torch.any(store_mask):
             return
@@ -206,7 +208,8 @@ class ImportantInfoHashLoss(nn.Module):
             align_mask[..., -1] = False
 
         if value is not None:
-            aux_value_all = self.aux_value_net(latent).squeeze(-1)
+            # [핵심 수정 부분] latent에 detach()를 적용하여, 증류 학습 시 엄청난 크기의 MSE 오차가 World Model 인코더로 흘러가 망가뜨리는 것을 막습니다.
+            aux_value_all = self.aux_value_net(latent.detach()).squeeze(-1)
             # 증류 학습에는 정렬이 어긋난 경계값(0.0)이 들어가지 않도록 철저히 차단
             distill_loss = F.mse_loss(aux_value_all[align_mask], value[align_mask].detach())
         else:
@@ -310,7 +313,14 @@ class ImportantInfoHashLoss(nn.Module):
             metric_diff = torch.abs(curr_metric.detach() - past_aux_pred.detach())
         else:
             past_metric = torch.tensor(past_metric_list, device=latent.device, dtype=curr_metric.dtype)
-            metric_diff = torch.abs(curr_metric - past_metric)
+            metric_diff = torch.abs(curr_metric.detach() - past_metric)
+        
+        # 스파이크 방지: metric 최댓값 추적 및 정규화
+        with torch.no_grad():
+            current_max = torch.max(torch.abs(curr_metric.detach()))
+            self.running_max_metric.copy_(torch.max(self.running_max_metric, current_max.float()))
+            
+        metric_diff = metric_diff / self.running_max_metric
         
         cosine_sim = F.cosine_similarity(curr_logits, past_logits, dim=-1, eps=1e-8)
         
