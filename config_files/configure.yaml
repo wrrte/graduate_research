@@ -96,7 +96,8 @@ Models:
       CropRatio: [0.9, 1.1]
     ImportantInfoHashLoss:
       Enable: true
-      TriggerType: reward         # [추가] 트리거 방식을 'reward' 또는 'td_error'로 설정합니다. store trigger가 아닌 loss 계산 트리거입니다.
+      TriggerType: td_error         # [추가] 트리거 방식을 'reward' 또는 'td_error'로 설정합니다. store trigger가 아닌 loss 계산 트리거입니다.
+      DiffType: aux_value         # [수정] 대조 거리에 Stateless 가치 증류 네트워크(대안 A)를 사용하도록 설정합니다. ('reward', 'td_error', 'value', 'aux_value')
       SigmaThreshold: 2.0
       HashBits: 13
       MaxQueuePerKey: 100000

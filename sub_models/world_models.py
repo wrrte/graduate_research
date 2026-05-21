@@ -1009,29 +1009,39 @@ class WorldModel(nn.Module):
                 if valid_steps > 0:
                     contrastive_acc = contrastive_acc / valid_steps
 
-            # --- [추가] RL Agent의 Value Function을 활용한 1-Step TD-Error 정밀 계산 ---
+            # --- [수정] RL Agent의 Value Function을 활용한 Value & 1-Step TD-Error 정밀 계산 ---
             td_error = None
-            if self.important_info_hash_loss.trigger_type == "td_error":
-                if agent is not None:
-                    with torch.no_grad():
-                        agent_input = torch.cat([flattened_sample, dist_feat], dim=-1)
-                        values = agent.value(agent_input) 
-                        gamma = getattr(agent, 'gamma', 0.985)
-                        
-                        # [수정] 차원 폭발(Broadcasting Explosion) 원천 차단을 위한 모든 텐서 Squeeze 방어
-                        reward_sq = reward.squeeze(-1) if reward.dim() == 3 else reward
-                        term_sq = termination.squeeze(-1) if termination.dim() == 3 else termination
-                        values_sq = values.squeeze(-1) if values.dim() == 3 else values
-                        
-                        td_error = torch.zeros_like(reward_sq)
-                        # delta_t = r_t + gamma * V_{t+1} * (1 - done_t) - V_t
-                        td_error[:, :-1] = reward_sq[:, :-1] + gamma * values_sq[:, 1:] * (1 - term_sq[:, :-1]) - values_sq[:, :-1]
-                        
-                        # [수정] 1번 에러 픽스: 마지막 스텝은 미래 가치(V_{t+1})가 존재하지 않아 
-                        # 정상적인 TD-Error 계산이 불가능하므로, 오염 방지를 위해 0.0으로 마스킹 처리
-                        td_error[:, -1] = 0.0
-                else:
-                    raise ValueError("TriggerType이 'td_error'로 설정되었으나, WorldModel.update 메서드에 agent 객체가 전달되지 않았습니다.")
+            values_sq = None
+            
+            if self.important_info_hash_loss.enabled:
+                # 해시 로스의 설정값을 읽어옵니다 (getattr로 안전하게 접근)
+                trigger_type = getattr(self.important_info_hash_loss, 'trigger_type', 'reward')
+                diff_type = getattr(self.important_info_hash_loss, 'diff_type', 'reward')
+                
+                needs_value = (diff_type in ["value", "td_error"]) or (trigger_type == "td_error")
+                needs_td_error = (diff_type == "td_error") or (trigger_type == "td_error")
+
+                if needs_value:
+                    if agent is not None:
+                        with torch.no_grad():
+                            agent_input = torch.cat([flattened_sample, dist_feat], dim=-1)
+                            values = agent.value(agent_input) 
+                            gamma = getattr(agent, 'gamma', 0.985)
+                            
+                            # [수정] 차원 폭발(Broadcasting Explosion) 원천 차단을 위한 모든 텐서 Squeeze 방어
+                            reward_sq = reward.squeeze(-1) if reward.dim() == 3 else reward
+                            term_sq = termination.squeeze(-1) if termination.dim() == 3 else termination
+                            values_sq = values.squeeze(-1) if values.dim() == 3 else values
+                            
+                            if needs_td_error:
+                                td_error = torch.zeros_like(reward_sq)
+                                # delta_t = r_t + gamma * V_{t+1} * (1 - done_t) - V_t
+                                td_error[:, :-1] = reward_sq[:, :-1] + gamma * values_sq[:, 1:] * (1 - term_sq[:, :-1]) - values_sq[:, :-1]
+                                
+                                # 마지막 스텝은 미래 가치(V_{t+1})가 존재하지 않아 오염 방지를 위해 0.0으로 마스킹 처리
+                                td_error[:, -1] = 0.0
+                    else:
+                        raise ValueError(f"TriggerType('{trigger_type}')이나 DiffType('{diff_type}')을 계산하려면 WorldModel.update에 agent 객체가 전달되어야 합니다.")
             # -----------------------------------------------------------------------
 
             important_hash_loss = self.important_info_hash_loss(
@@ -1043,8 +1053,9 @@ class WorldModel(nn.Module):
                 reward_mean=reward_mean,
                 reward_std=reward_std,
                 td_error=td_error,
-                indexes=indexes,           # 추가
-                replay_buffer=replay_buffer # 추가
+                value=values_sq,           # [추가] value 값 전달
+                indexes=indexes,           
+                replay_buffer=replay_buffer 
             )
 
             reward_hat = self.reward_decoder(dist_feat)

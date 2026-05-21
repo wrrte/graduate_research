@@ -23,7 +23,7 @@ class FastHashBucket:
         if not self.data:
             return []
         k = min(k, len(self.data))
-        # 파이썬 list에서의 random.sample은 O(k)로 동작
+        # 파이썬 list에서의 random.sample is O(k)로 동작
         indices = random.sample(range(len(self.data)), k)
         samples = [self.data[i] for i in indices]
         
@@ -47,6 +47,19 @@ class ImportantInfoHashLoss(nn.Module):
         
         # TriggerType 설정 (reward 또는 td_error)
         self.trigger_type = str(cfg.get("TriggerType", "reward")).lower()
+        
+        # [추가] Contrastive 거리에 사용할 Metric 설정
+        self.diff_type = str(cfg.get("DiffType", "reward")).lower()
+        if self.diff_type not in ["reward", "td_error", "value", "aux_value"]:
+            raise ValueError(f"DiffType must be 'reward', 'td_error', 'value', or 'aux_value', got {self.diff_type}")
+            
+        # [추가] Stateless Value Distillation을 위한 보조 네트워크 (Mamba State 없이 오직 latent 표상으로만 가치 매핑)
+        self.aux_value_net = nn.Sequential(
+            nn.Linear(latent_dim, 512),
+            nn.LayerNorm(512),
+            nn.SiLU(),
+            nn.Linear(512, 1)
+        )
         
         # RewardThreshold 대신 SigmaThreshold를 설정에서 읽어옴 (기본값 2.0)
         self.sigma_threshold = float(cfg.get("SigmaThreshold", 2.0))
@@ -115,7 +128,8 @@ class ImportantInfoHashLoss(nn.Module):
         return keys.detach().cpu().tolist()
 
     # obs 대신 ReplayBuffer 인덱스 저장으로 변경
-    def _update_memory(self, obs, reward, latent, reward_mean, reward_std, td_error=None, indexes=None):
+    # [수정] value 파라미터 추가
+    def _update_memory(self, obs, reward, latent, reward_mean, reward_std, td_error=None, value=None, indexes=None):
         if not self.enabled or indexes is None:
             return
         if obs.numel() == 0:
@@ -126,6 +140,8 @@ class ImportantInfoHashLoss(nn.Module):
             reward = reward.squeeze(-1)
         if td_error is not None and td_error.dim() == 3:
             td_error = td_error.squeeze(-1)
+        if value is not None and value.dim() == 3:
+            value = value.squeeze(-1)
 
         # [수정] 시퀀스의 마지막 스텝(미래 가치를 알 수 없는 더미 0.0)을 마스킹
         valid_mask = torch.ones_like(reward, dtype=torch.bool)
@@ -152,8 +168,16 @@ class ImportantInfoHashLoss(nn.Module):
         if not torch.any(store_mask):
             return
 
+        # [추가] config의 DiffType에 따라 저장할 Metric 결정
+        if self.diff_type == "td_error":
+            metric_to_store = td_error
+        elif self.diff_type in ["value", "aux_value"]:
+            metric_to_store = value if value is not None else torch.zeros_like(reward)
+        else:
+            metric_to_store = reward
+
         indexes_cpu = indexes.detach().cpu()
-        reward_cpu = reward.detach().cpu()
+        metric_cpu = metric_to_store.detach().cpu()
         store_mask_cpu = store_mask.detach().cpu()
         
         latent_masked = latent.detach()[store_mask]
@@ -162,34 +186,52 @@ class ImportantInfoHashLoss(nn.Module):
             return
 
         index_items = indexes_cpu[store_mask_cpu]
-        reward_items = reward_cpu[store_mask_cpu]
+        metric_items = metric_cpu[store_mask_cpu]
 
-        # 이미지 텐서가 아닌 정수 인덱스만 큐에 기록
-        for key, index_item, reward_item in zip(keys, index_items, reward_items):
+        # 이미지 텐서가 아닌 정수 인덱스와 선택된 Metric을 큐에 기록
+        for key, index_item, metric_item in zip(keys, index_items, metric_items):
             queue = self.hash_memory.get(key)
             if queue is None:
                 # deque 대신 FastHashBucket 사용
                 queue = FastHashBucket(max_size=self.max_queue_per_key)
                 self.hash_memory[key] = queue
-            queue.append((int(index_item), float(reward_item)))
+            queue.append((int(index_item), float(metric_item)))
 
     # 2번 최적화 적용 및 2번 버그(NxN 차원 팽창) 방지를 위한 Squeeze 적용, ReplayBuffer 연동
-    def forward(self, obs, latent, logits, reward, encode_fn, reward_mean, reward_std, td_error=None, indexes=None, replay_buffer=None):
+    # [수정] value 파라미터 추가
+    def forward(self, obs, latent, logits, reward, encode_fn, reward_mean, reward_std, td_error=None, value=None, indexes=None, replay_buffer=None):
         if not self.enabled:
             return latent.new_tensor(0.0)
         if obs.numel() == 0:
             return latent.new_tensor(0.0)
+            
+        # DiffType에 따른 필수 파라미터 검사
+        if self.diff_type == "value" and value is None:
+            raise ValueError("DiffType이 'value'일 경우 forward에 value를 반드시 전달해야 합니다.")
+        if self.diff_type == "td_error" and td_error is None:
+            raise ValueError("DiffType이 'td_error'일 경우 forward에 td_error를 반드시 전달해야 합니다.")
+        if self.diff_type == "aux_value" and value is None:
+            raise ValueError("DiffType이 'aux_value'일 경우 distillation 학습을 위해 forward에 value를 반드시 전달해야 합니다.")
             
         # 차원 불일치 버그 픽스 (NxN 오염 및 브로드캐스팅 방지)
         if reward.dim() == 3:
             reward = reward.squeeze(-1)
         if td_error is not None and td_error.dim() == 3:
             td_error = td_error.squeeze(-1)
+        if value is not None and value.dim() == 3:
+            value = value.squeeze(-1)
 
         # [수정] 시퀀스의 마지막 스텝(더미 데이터)을 마스킹
         valid_mask = torch.ones_like(reward, dtype=torch.bool)
         if valid_mask.dim() >= 2:
             valid_mask[..., -1] = False
+
+        # [추가] Stateless Value Distillation 역전파 손실 연산 (트리거 여부와 관계없이 매 스텝 최신 Critic을 모방하도록 유도)
+        if value is not None:
+            aux_value_all = self.aux_value_net(latent).squeeze(-1)
+            distill_loss = F.mse_loss(aux_value_all[valid_mask], value[valid_mask].detach())
+        else:
+            distill_loss = latent.new_tensor(0.0)
 
         # config의 TriggerType에 따른 조건부 트리거 마스크 생성
         if self.trigger_type == "td_error":
@@ -208,18 +250,28 @@ class ImportantInfoHashLoss(nn.Module):
         trigger_mask = trigger_mask & valid_mask
 
         if not torch.any(trigger_mask) or not self.hash_memory:
-            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, indexes)
-            return latent.new_tensor(0.0)
+            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, value, indexes)
+            return distill_loss
 
         latent_trigger = latent[trigger_mask]
-        reward_trigger = reward[trigger_mask]
         logits_trigger = logits[trigger_mask] # 재계산을 막기 위해 미리 뽑아둔 로짓 활용
+        
+        # [추가] DiffType에 따른 현재 Metric 마스킹
+        if self.diff_type == "td_error":
+            metric_trigger = td_error[trigger_mask]
+        elif self.diff_type == "value":
+            metric_trigger = value[trigger_mask]
+        elif self.diff_type == "aux_value":
+            metric_trigger = aux_value_all[trigger_mask]
+        else:
+            metric_trigger = reward[trigger_mask]
+            
         keys = self._hash_keys(latent_trigger.detach())
 
         past_index_list = []
-        past_reward_list = []
+        past_metric_list = []
         curr_logits_list = [] # obs 대신 logits 수집
-        curr_reward_list = []
+        curr_metric_list = []
         pair_count = 0
 
         for idx, key in enumerate(keys):
@@ -237,19 +289,19 @@ class ImportantInfoHashLoss(nn.Module):
             if not entries:
                 break
 
-            for index_item, reward_item in entries:
+            for index_item, metric_item in entries:
                 past_index_list.append(index_item)
-                past_reward_list.append(reward_item)
+                past_metric_list.append(metric_item)
                 curr_logits_list.append(logits_trigger[idx]) # 추가 인코딩 없이 로짓 담기
-                curr_reward_list.append(reward_trigger[idx])
+                curr_metric_list.append(metric_trigger[idx])
                 pair_count += 1
             
             if pair_count >= self.max_pairs_per_batch:
                 break
 
         if pair_count == 0:
-            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, indexes)
-            return latent.new_tensor(0.0)
+            self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, value, indexes)
+            return distill_loss
 
         if replay_buffer is None:
             raise ValueError("replay_buffer is required to fetch past observations.")
@@ -284,21 +336,29 @@ class ImportantInfoHashLoss(nn.Module):
             if target_queue is None:
                 target_queue = FastHashBucket(max_size=self.max_queue_per_key)
                 self.hash_memory[new_key] = target_queue
-            # 다시 넣을 때도 이미지 대신 인덱스 보관
-            target_queue.append((past_index_list[i], float(past_reward_list[i])))
+            # 다시 넣을 때도 이미지 대신 인덱스와 선택된 Metric 보관
+            target_queue.append((past_index_list[i], float(past_metric_list[i])))
 
-        # Squeeze가 적용되어 curr_reward는 (N,), past_reward도 (N,)이 됨
-        curr_reward = torch.stack(curr_reward_list, dim=0)
-        past_reward = torch.tensor(past_reward_list, device=latent.device, dtype=curr_reward.dtype)
+        # Squeeze가 적용되어 curr_metric은 (N,), past_metric도 (N,)이 됨
+        curr_metric = torch.stack(curr_metric_list, dim=0)
 
-        reward_diff = torch.abs(curr_reward - past_reward)
+        # [수정] DiffType에 따른 Metric 차이 계산
+        if self.diff_type == "aux_value":
+            # 최신 인코더로 복원된 past_latent를 사용하여 현재 가중치 기준으로 과거 상태의 가치를 동기화하여 계산
+            past_aux_pred = self.aux_value_net(past_latent).squeeze(-1)
+            # 대조 학습 가중치 연산 시 표상 붕괴(Trivial shortcut)를 차단하기 위해 무조건 detach 처리하여 지표로만 활용
+            metric_diff = torch.abs(curr_metric.detach() - past_aux_pred.detach())
+        else:
+            past_metric = torch.tensor(past_metric_list, device=latent.device, dtype=curr_metric.dtype)
+            metric_diff = torch.abs(curr_metric - past_metric)
+        
         # 노이즈가 제거된 logits를 사용하여 코사인 유사도 정밀 계산
         cosine_sim = F.cosine_similarity(curr_logits, past_logits, dim=-1, eps=1e-8)
         
         # Margin 기반 척력 설계: 보상이 다를 때 표상을 무한히(-1) 밀어내지 않고 직교(0)까지만 밀어냄. 
         # 보상이 같으면(reward_diff=0) Loss는 0이 되어, 다른 모듈의 구조화에 간섭하지 않음.
         margin = 0.0
-        loss = (reward_diff * F.relu(cosine_sim - margin)).mean() * self.loss_scale
+        loss = (metric_diff * F.relu(cosine_sim - margin)).mean() * self.loss_scale + distill_loss
 
-        self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, indexes)
+        self._update_memory(obs, reward, latent, reward_mean, reward_std, td_error, value, indexes)
         return loss
