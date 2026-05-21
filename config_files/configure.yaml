@@ -95,7 +95,7 @@ Models:
       CropScale: [0.25, 1.0]
       CropRatio: [0.9, 1.1]
     ImportantInfoHashLoss:
-      Enable: false
+      Enable: true
       TriggerType: reward         # [추가] 트리거 방식을 'reward' 또는 'td_error'로 설정합니다. store trigger가 아닌 loss 계산 트리거입니다.
       SigmaThreshold: 2.0
       HashBits: 13
