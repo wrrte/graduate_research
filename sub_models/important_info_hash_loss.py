@@ -5,6 +5,40 @@ from collections import deque
 from einops import rearrange # [추가] 실시간 이미지 텐서 조립을 위해 추가
 import random # [RL 연구자 수정] 모듈 최상단으로 이동 (4번 지적 반영)
 
+class FastHashBucket:
+    """O(N) 병목을 제거하고 완전한 O(1) 연산을 지원하는 리스트 기반 해시 버킷"""
+    def __init__(self, max_size):
+        self.max_size = max_size
+        self.data = []
+
+    def append(self, item):
+        if len(self.data) < self.max_size:
+            self.data.append(item)
+        else:
+            # 큐가 꽉 찼을 때 랜덤한 위치를 덮어씌움 (O(1) 유지 및 다양성 확보)
+            replace_idx = random.randrange(self.max_size)
+            self.data[replace_idx] = item
+
+    def sample_and_remove(self, k):
+        if not self.data:
+            return []
+        k = min(k, len(self.data))
+        # 파이썬 list에서의 random.sample은 O(k)로 동작
+        indices = random.sample(range(len(self.data)), k)
+        samples = [self.data[i] for i in indices]
+        
+        # O(1) 삭제를 위한 Swap-and-Pop (인덱스가 꼬이지 않도록 내림차순 정렬 후 삭제)
+        indices.sort(reverse=True)
+        for idx in indices:
+            self.data[idx] = self.data[-1]
+            self.data.pop()
+            
+        return samples
+
+    def __len__(self):
+        return len(self.data)
+
+
 class ImportantInfoHashLoss(nn.Module):
     def __init__(self, latent_dim, config):
         super().__init__()
@@ -123,7 +157,8 @@ class ImportantInfoHashLoss(nn.Module):
         for key, index_item, reward_item in zip(keys, index_items, reward_items):
             queue = self.hash_memory.get(key)
             if queue is None:
-                queue = deque(maxlen=self.max_queue_per_key)
+                # deque 대신 FastHashBucket 사용
+                queue = FastHashBucket(max_size=self.max_queue_per_key)
                 self.hash_memory[key] = queue
             queue.append((int(index_item), float(reward_item)))
 
@@ -173,25 +208,15 @@ class ImportantInfoHashLoss(nn.Module):
             if not queue:
                 continue
 
-            # 저장된 데이터가 뽑으려는 개수보다 많으면 '무작위'로 추출, 적으면 전부 사용
-            queue_list = list(queue)
-            if len(queue_list) > self.max_past_samples:
-                entries = random.sample(queue_list, self.max_past_samples)
-            else:
-                entries = queue_list
-
-            # [수정] 1번 버그 픽스: 남은 슬롯 수만큼만 자르기 (데이터 영구 증발 방지)
+            # [수정] O(N) 큐 재생성 병목 완벽 최적화
+            # FastHashBucket의 sample_and_remove를 통해 O(k) 시간에 랜덤 샘플링 및 삭제 처리
             available_slots = self.max_pairs_per_batch - pair_count
-            if len(entries) > available_slots:
-                entries = entries[:available_slots]
+            k = min(self.max_past_samples, available_slots)
+            
+            entries = queue.sample_and_remove(k)
 
             if not entries:
                 break
-
-            # [추가] Re-hashing(방 이동)을 위해 선택된 샘플만 기존 큐에서 안전하게 제거
-            entries_ids = set(id(e) for e in entries)
-            new_queue = deque([e for e in queue if id(e) not in entries_ids], maxlen=self.max_queue_per_key)
-            self.hash_memory[key] = new_queue
 
             for index_item, reward_item in entries:
                 past_index_list.append(index_item)
@@ -200,7 +225,6 @@ class ImportantInfoHashLoss(nn.Module):
                 curr_reward_list.append(reward_trigger[idx])
                 pair_count += 1
             
-            # 여기서 break 되어도, 위에서 Slicing을 했기 때문에 삭제된 데이터 유실이 없음
             if pair_count >= self.max_pairs_per_batch:
                 break
 
@@ -239,7 +263,7 @@ class ImportantInfoHashLoss(nn.Module):
         for i, new_key in enumerate(new_keys):
             target_queue = self.hash_memory.get(new_key)
             if target_queue is None:
-                target_queue = deque(maxlen=self.max_queue_per_key)
+                target_queue = FastHashBucket(max_size=self.max_queue_per_key)
                 self.hash_memory[new_key] = target_queue
             # [수정] 다시 넣을 때도 이미지 대신 인덱스 보관
             target_queue.append((past_index_list[i], float(past_reward_list[i])))
